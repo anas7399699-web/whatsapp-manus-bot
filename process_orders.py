@@ -4,18 +4,19 @@ import os
 
 def process_excel_orders_to_list(file_path):
     """
-    يعالج ملف الإكسل ويعيد قائمة من الرسائل (رسالة لكل صف)
+    يعالج ملف الإكسل ويعيد قاموساً يحتوي على رسائل الرياض ورسائل باقي المناطق بشكل منفصل.
     """
     try:
         df = pd.read_excel(file_path)
         
         # تصفية الصفوف التي تحتوي على "قيد التنفيذ"
         mask = df.apply(lambda row: row.astype(str).str.contains('قيد التنفيذ', na=False).any(), axis=1)
-        df_in_progress = df[mask]
+        df_in_progress = df[mask].copy()
         
+        if df_in_progress.empty:
+            return {"riyadh": [], "others": []}
+            
         print(f"DEBUG: Found {len(df_in_progress)} orders with 'قيد التنفيذ'.")
-        
-        messages = []
         
         # تحديد أسماء الأعمدة بشكل مرن
         city_col = 'المدينة' if 'المدينة' in df.columns else 'City'
@@ -24,6 +25,8 @@ def process_excel_orders_to_list(file_path):
         building_no_col = next((col for col in df.columns if 'building_number' in col), 'shipping_building_number')
         additional_no_col = next((col for col in df.columns if 'additional_number' in col), 'shipping_additional_number')
         postal_code_col = next((col for col in df.columns if 'postal_code' in col), 'postal_code')
+        
+        # أعمدة البيانات الشخصية (الأولوية للمستلم)
         rec_name_col = next((col for col in df.columns if 'إسم المستلم الثاني' in col), 'إسم المستلم الثاني')
         rec_mobile_col = next((col for col in df.columns if 'receiver_mobile' in col), 'receiver_mobile')
         cust_name_col = next((col for col in df.columns if 'اسم العميل' in col or 'Customer Name' in col), 'Customer Name')
@@ -53,9 +56,25 @@ def process_excel_orders_to_list(file_path):
                 
             full_address = " ".join(address_parts)
             
-            # 2. منطق المستلم مقابل العميل
-            recipient_name = str(row[rec_name_col]) if rec_name_col in row and pd.notna(row[rec_name_col]) and str(row[rec_name_col]).strip() != "" else str(row[cust_name_col])
-            raw_mobile = str(row[rec_mobile_col]) if rec_mobile_col in row and pd.notna(row[rec_mobile_col]) and str(row[rec_mobile_col]).strip() != "" else str(row[cust_mobile_col])
+            # 2. منطق الأولوية الصارم لبيانات المستلم (المستلم أولاً ثم العميل)
+            # التحقق من اسم المستلم
+            recipient_name = ""
+            if rec_name_col in row and pd.notna(row[rec_name_col]) and str(row[rec_name_col]).strip() != "":
+                recipient_name = str(row[rec_name_col]).strip()
+            elif cust_name_col in row and pd.notna(row[cust_name_col]) and str(row[cust_name_col]).strip() != "":
+                recipient_name = str(row[cust_name_col]).strip()
+            else:
+                recipient_name = "غير متوفر"
+
+            # التحقق من رقم الجوال (المستلم أولاً)
+            raw_mobile = ""
+            if rec_mobile_col in row and pd.notna(row[rec_mobile_col]) and str(row[rec_mobile_col]).strip() != "":
+                raw_mobile = str(row[rec_mobile_col]).strip()
+            elif cust_mobile_col in row and pd.notna(row[cust_mobile_col]) and str(row[cust_mobile_col]).strip() != "":
+                raw_mobile = str(row[cust_mobile_col]).strip()
+            else:
+                raw_mobile = "0"
+
             mobile_str = str(raw_mobile).split('.')[0].strip()
             
             # التأكد من وجود كود الدولة 966
@@ -68,20 +87,31 @@ def process_excel_orders_to_list(file_path):
             
             return f"العنوان / {full_address}\nرقم الطلبية/ {order_id}\nرقم المستلم / +{mobile_str}\nاسم المستلم/ {recipient_name}"
 
-        # معالجة كل صف وإضافته للقائمة
+        # فرز الطلبات (الرياض أولاً ثم باقي المناطق)
+        riyadh_messages = []
+        others_messages = []
+        
         for _, row in df_in_progress.iterrows():
-            messages.append(format_order(row))
+            city_val = str(row[city_col]) if city_col in row and pd.notna(row[city_col]) else ""
+            msg = format_order(row)
             
-        return messages
+            if any(x in city_val for x in ['الرياض', 'Riyadh']):
+                riyadh_messages.append(msg)
+            else:
+                others_messages.append(msg)
+                
+        return {"riyadh": riyadh_messages, "others": others_messages}
+        
     except Exception as e:
         print(f"Error: {str(e)}")
         return None
 
-# للحفاظ على التوافق مع أي استدعاء قديم (اختياري)
 def process_excel_orders(file_path, output_path):
-    messages = process_excel_orders_to_list(file_path)
-    if messages:
+    # للحفاظ على التوافق مع أي استدعاء قديم
+    result = process_excel_orders_to_list(file_path)
+    if result:
+        all_msgs = result["riyadh"] + result["others"]
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write("\n\n---\n\n".join(messages))
+            f.write("\n\n---\n\n".join(all_msgs))
         return True
     return False

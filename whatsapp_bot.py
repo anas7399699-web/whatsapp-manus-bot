@@ -66,15 +66,13 @@ def webhook():
                 for msg in messages:
                     sender_id = msg.get('from')
                     
-                    # التحقق إذا كانت الرسالة مستند (ملف Excel)
                     if msg.get('type') == 'document':
                         doc = msg.get('document')
                         mime_type = doc.get('mime_type', '')
                         filename = doc.get('filename', 'file.xlsx')
                         
-                        # قبول ملفات الإكسل فقط
                         if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
-                            send_whatsapp_message(sender_id, "📥 تم استلام الملف. جاري معالجة الطلبات وإرسالها فرادى... يرجى الانتظار ⏳")
+                            send_whatsapp_message(sender_id, "📥 تم استلام الملف. جاري معالجة الطلبات وفرزها (الرياض أولاً)... ⏳")
                             
                             media_content = download_whatsapp_media(doc.get('id'))
                             if media_content:
@@ -82,36 +80,44 @@ def webhook():
                                     tmp_in.write(media_content)
                                     input_path = tmp_in.name
                                 
-                                # استخراج قائمة الرسائل (كل صف في رسالة)
-                                order_messages = process_excel_orders_to_list(input_path)
+                                # استخراج قاموس الرسائل (رياض، باقي المناطق)
+                                result = process_excel_orders_to_list(input_path)
                                 
-                                if order_messages and len(order_messages) > 0:
-                                    total = len(order_messages)
-                                    send_whatsapp_message(sender_id, f"✅ تم استخراج {total} طلب. سأبدأ الإرسال الآن:")
+                                if result:
+                                    riyadh_msgs = result.get("riyadh", [])
+                                    others_msgs = result.get("others", [])
+                                    total = len(riyadh_msgs) + len(others_msgs)
                                     
-                                    # إرسال كل رسالة بشكل مستقل تماماً
-                                    for index, order_msg in enumerate(order_messages, 1):
-                                        # إضافة رقم الطلب في بداية الرسالة للتأكيد على الفصل
-                                        final_msg = f"📦 طلب رقم ({index}/{total}):\n\n{order_msg}"
-                                        send_whatsapp_message(sender_id, final_msg)
+                                    if total > 0:
+                                        send_whatsapp_message(sender_id, f"✅ تم العثور على {total} طلب قيد التنفيذ.")
                                         
-                                        # تأخير بسيط جداً لضمان وصول الرسائل بالترتيب وعدم حظرها
-                                        time.sleep(0.5)
-                                    
-                                    send_whatsapp_message(sender_id, "🏁 انتهيت من إرسال جميع الطلبات بنجاح.")
-                                else:
-                                    send_whatsapp_message(sender_id, "❌ لم أجد أي طلبات 'قيد التنفيذ' في هذا الملف.")
+                                        # 1. إرسال طلبات الرياض أولاً
+                                        if riyadh_msgs:
+                                            send_whatsapp_message(sender_id, "📍 جاري إرسال طلبات مدينة الرياض:")
+                                            for i, r_msg in enumerate(riyadh_msgs, 1):
+                                                send_whatsapp_message(sender_id, f"📦 (الرياض) طلب {i}/{len(riyadh_msgs)}:\n\n{r_msg}")
+                                                time.sleep(0.5)
+                                        
+                                        # 2. إرسال طلبات باقي المناطق
+                                        if others_msgs:
+                                            send_whatsapp_message(sender_id, "📍 انتهت طلبات الرياض. جاري إرسال طلبات باقي المناطق:")
+                                            for i, o_msg in enumerate(others_msgs, 1):
+                                                send_whatsapp_message(sender_id, f"📦 (باقي المناطق) طلب {i}/{len(others_msgs)}:\n\n{o_msg}")
+                                                time.sleep(0.5)
+                                        
+                                        send_whatsapp_message(sender_id, "🏁 تم الانتهاء من إرسال جميع الطلبات.")
+                                    else:
+                                        send_whatsapp_message(sender_id, "❌ لم أجد أي طلبات 'قيد التنفيذ' في هذا الملف.")
                                 
-                                # حذف الملف المؤقت بعد المعالجة
                                 if os.path.exists(input_path):
                                     os.remove(input_path)
                             else:
-                                send_whatsapp_message(sender_id, "❌ فشل تحميل الملف. يرجى المحاولة مرة أخرى.")
+                                send_whatsapp_message(sender_id, "❌ فشل تحميل الملف.")
                         else:
                             send_whatsapp_message(sender_id, "⚠️ يرجى إرسال ملف بصيغة Excel (.xlsx) فقط.")
                     
                     elif msg.get('type') == 'text':
-                        send_whatsapp_message(sender_id, "مرحباً! أرسل لي ملف Excel وسأقوم بتقسيم الطلبات وإرسال كل طلب في رسالة مستقلة فوراً.")
+                        send_whatsapp_message(sender_id, "مرحباً! أرسل لي ملف Excel وسأقوم بفرز طلبات الرياض أولاً ثم باقي المناطق وإرسالها لك فرادى.")
 
     return jsonify({"status": "ok"}), 200
 
