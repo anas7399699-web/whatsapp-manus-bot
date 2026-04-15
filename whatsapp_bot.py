@@ -72,7 +72,7 @@ def webhook():
                         filename = doc.get('filename', 'file.xlsx')
                         
                         if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
-                            send_whatsapp_message(sender_id, "📥 تم استلام الملف. جاري معالجة الطلبات وفرزها (الرياض أولاً)... ⏳")
+                            send_whatsapp_message(sender_id, "📥 تم استلام الملف. جاري معالجة الطلبات... ⏳")
                             
                             media_content = download_whatsapp_media(doc.get('id'))
                             if media_content:
@@ -80,7 +80,7 @@ def webhook():
                                     tmp_in.write(media_content)
                                     input_path = tmp_in.name
                                 
-                                # استخراج قاموس الرسائل (رياض، باقي المناطق)
+                                # استخراج قاموس الرسائل
                                 result = process_excel_orders_to_list(input_path)
                                 
                                 if result:
@@ -89,23 +89,21 @@ def webhook():
                                     total = len(riyadh_msgs) + len(others_msgs)
                                     
                                     if total > 0:
-                                        send_whatsapp_message(sender_id, f"✅ تم العثور على {total} طلب قيد التنفيذ.")
-                                        
                                         # 1. إرسال طلبات الرياض أولاً
                                         if riyadh_msgs:
-                                            send_whatsapp_message(sender_id, "📍 جاري إرسال طلبات مدينة الرياض:")
+                                            send_whatsapp_message(sender_id, "📍 سأبدأ الآن بإرسال طلبات مدينة الرياض:")
                                             for i, r_msg in enumerate(riyadh_msgs, 1):
-                                                send_whatsapp_message(sender_id, f"📦 (الرياض) طلب {i}/{len(riyadh_msgs)}:\n\n{r_msg}")
+                                                send_whatsapp_message(sender_id, f"📦 طلب {i}/{len(riyadh_msgs)}:\n\n{r_msg}")
                                                 time.sleep(0.5)
                                         
                                         # 2. إرسال طلبات باقي المناطق
                                         if others_msgs:
-                                            send_whatsapp_message(sender_id, "📍 انتهت طلبات الرياض. جاري إرسال طلبات باقي المناطق:")
+                                            send_whatsapp_message(sender_id, "📍 سأبدأ الآن بإرسال طلبات باقي المناطق:")
                                             for i, o_msg in enumerate(others_msgs, 1):
-                                                send_whatsapp_message(sender_id, f"📦 (باقي المناطق) طلب {i}/{len(others_msgs)}:\n\n{o_msg}")
+                                                send_whatsapp_message(sender_id, f"📦 طلب {i}/{len(others_msgs)}:\n\n{o_msg}")
                                                 time.sleep(0.5)
                                         
-                                        send_whatsapp_message(sender_id, "🏁 تم الانتهاء من إرسال جميع الطلبات.")
+                                        send_whatsapp_message(sender_id, "🏁 تم الانتهاء من إرسال جميع الطلبات بنجاح.")
                                     else:
                                         send_whatsapp_message(sender_id, "❌ لم أجد أي طلبات 'قيد التنفيذ' في هذا الملف.")
                                 

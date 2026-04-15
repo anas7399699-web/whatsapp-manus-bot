@@ -26,7 +26,7 @@ def process_excel_orders_to_list(file_path):
         additional_no_col = next((col for col in df.columns if 'additional_number' in col), 'shipping_additional_number')
         postal_code_col = next((col for col in df.columns if 'postal_code' in col), 'postal_code')
         
-        # أعمدة البيانات الشخصية (الأولوية للمستلم)
+        # أعمدة البيانات الشخصية
         rec_name_col = next((col for col in df.columns if 'إسم المستلم الثاني' in col), 'إسم المستلم الثاني')
         rec_mobile_col = next((col for col in df.columns if 'receiver_mobile' in col), 'receiver_mobile')
         cust_name_col = next((col for col in df.columns if 'اسم العميل' in col or 'Customer Name' in col), 'Customer Name')
@@ -56,22 +56,28 @@ def process_excel_orders_to_list(file_path):
                 
             full_address = " ".join(address_parts)
             
-            # 2. منطق الأولوية الصارم لبيانات المستلم (المستلم أولاً ثم العميل)
+            # 2. منطق الأولوية الصارم لبيانات المستلم
             # التحقق من اسم المستلم
             recipient_name = ""
-            if rec_name_col in row and pd.notna(row[rec_name_col]) and str(row[rec_name_col]).strip() != "":
-                recipient_name = str(row[rec_name_col]).strip()
-            elif cust_name_col in row and pd.notna(row[cust_name_col]) and str(row[cust_name_col]).strip() != "":
-                recipient_name = str(row[cust_name_col]).strip()
+            val_rec_name = str(row[rec_name_col]).strip() if rec_name_col in row and pd.notna(row[rec_name_col]) else ""
+            val_cust_name = str(row[cust_name_col]).strip() if cust_name_col in row and pd.notna(row[cust_name_col]) else ""
+            
+            if val_rec_name and val_rec_name.lower() != 'nan' and val_rec_name != "":
+                recipient_name = val_rec_name
+            elif val_cust_name and val_cust_name.lower() != 'nan' and val_cust_name != "":
+                recipient_name = val_cust_name
             else:
                 recipient_name = "غير متوفر"
 
             # التحقق من رقم الجوال (المستلم أولاً)
             raw_mobile = ""
-            if rec_mobile_col in row and pd.notna(row[rec_mobile_col]) and str(row[rec_mobile_col]).strip() != "":
-                raw_mobile = str(row[rec_mobile_col]).strip()
-            elif cust_mobile_col in row and pd.notna(row[cust_mobile_col]) and str(row[cust_mobile_col]).strip() != "":
-                raw_mobile = str(row[cust_mobile_col]).strip()
+            val_rec_mobile = str(row[rec_mobile_col]).strip() if rec_mobile_col in row and pd.notna(row[rec_mobile_col]) else ""
+            val_cust_mobile = str(row[cust_mobile_col]).strip() if cust_mobile_col in row and pd.notna(row[cust_mobile_col]) else ""
+            
+            if val_rec_mobile and val_rec_mobile.lower() != 'nan' and val_rec_mobile != "" and val_rec_mobile != "0":
+                raw_mobile = val_rec_mobile
+            elif val_cust_mobile and val_cust_mobile.lower() != 'nan' and val_cust_mobile != "" and val_cust_mobile != "0":
+                raw_mobile = val_cust_mobile
             else:
                 raw_mobile = "0"
 
@@ -107,7 +113,6 @@ def process_excel_orders_to_list(file_path):
         return None
 
 def process_excel_orders(file_path, output_path):
-    # للحفاظ على التوافق مع أي استدعاء قديم
     result = process_excel_orders_to_list(file_path)
     if result:
         all_msgs = result["riyadh"] + result["others"]
