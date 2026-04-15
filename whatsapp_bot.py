@@ -1,7 +1,8 @@
 import os
 import requests
+import time
 from flask import Flask, request, jsonify
-from process_orders import process_excel_orders
+from process_orders import process_excel_orders_to_list
 import tempfile
 
 app = Flask(__name__)
@@ -23,18 +24,25 @@ def send_whatsapp_message(to, text):
         "type": "text",
         "text": {"body": text}
     }
-    response = requests.post(url, headers=headers, json=data)
-    return response.json()
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        return response.json()
+    except Exception as e:
+        print(f"Error sending message: {str(e)}")
+        return None
 
 def download_whatsapp_media(media_id):
     url = f"https://graph.facebook.com/v18.0/{media_id}"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-    res = requests.get(url, headers=headers)
-    media_url = res.json().get('url')
-    
-    if media_url:
-        media_res = requests.get(media_url, headers=headers)
-        return media_res.content
+    try:
+        res = requests.get(url, headers=headers)
+        media_url = res.json().get('url')
+        
+        if media_url:
+            media_res = requests.get(media_url, headers=headers)
+            return media_res.content
+    except Exception as e:
+        print(f"Error downloading media: {str(e)}")
     return None
 
 @app.route('/webhook', methods=['GET', 'POST'])
@@ -59,11 +67,11 @@ def webhook():
                     # التحقق إذا كانت الرسالة مستند (ملف Excel)
                     if msg.get('type') == 'document':
                         doc = msg.get('document')
-                        mime_type = doc.get('mime_type')
+                        mime_type = doc.get('mime_type', '')
                         filename = doc.get('filename', 'file.xlsx')
                         
                         if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
-                            send_whatsapp_message(sender_id, "جاري استلام ملف Excel ومعالجته... يرجى الانتظار ⏳")
+                            send_whatsapp_message(sender_id, "جاري استلام ملف Excel ومعالجة الطلبات... سأقوم بإرسال كل طلب في رسالة منفصلة ⏳")
                             
                             media_content = download_whatsapp_media(doc.get('id'))
                             if media_content:
@@ -71,36 +79,35 @@ def webhook():
                                     tmp_in.write(media_content)
                                     input_path = tmp_in.name
                                 
-                                output_path = input_path.replace('.xlsx', '_processed.txt')
+                                # استدعاء وظيفة المعالجة للحصول على قائمة الرسائل
+                                order_messages = process_excel_orders_to_list(input_path)
                                 
-                                # استدعاء وظيفة المعالجة من ملفك process_orders.py
-                                success = process_excel_orders(input_path, output_path)
-                                
-                                if success and os.path.exists(output_path):
-                                    with open(output_path, 'r', encoding='utf-8') as f:
-                                        result_text = f.read()
+                                if order_messages:
+                                    total_orders = len(order_messages)
+                                    send_whatsapp_message(sender_id, f"✅ تم العثور على {total_orders} طلب قيد التنفيذ. سأبدأ بإرسالها الآن:")
                                     
-                                    # إرسال النتيجة (نصية أو كملف)
-                                    # هنا سنرسلها كنص إذا لم تكن طويلة جداً، أو يمكنك تعديلها لإرسال ملف
-                                    if len(result_text) < 4000:
-                                        send_whatsapp_message(sender_id, f"✅ تم معالجة الطلبات بنجاح:\n\n{result_text}")
-                                    else:
-                                        send_whatsapp_message(sender_id, "✅ تم المعالجة، والنتائج جاهزة (النص طويل جداً للواتساب، سأرسل لك ملخصاً قريباً)")
+                                    for i, order_msg in enumerate(order_messages, 1):
+                                        # إرسال كل صف في رسالة منفصلة
+                                        send_whatsapp_message(sender_id, order_msg)
+                                        # تأخير بسيط لتجنب مشاكل السرعة في الإرسال (Rate Limiting)
+                                        if i % 5 == 0:
+                                            time.sleep(1) 
+                                    
+                                    send_whatsapp_message(sender_id, "✅ تم إرسال جميع الطلبات بنجاح.")
                                 else:
-                                    send_whatsapp_message(sender_id, "❌ عذراً، حدث خطأ أثناء معالجة الملف. تأكد من تنسيق الأعمدة.")
+                                    send_whatsapp_message(sender_id, "❌ عذراً، لم أجد أي طلبات 'قيد التنفيذ' في الملف أو حدث خطأ أثناء المعالجة.")
                                 
                                 # تنظيف الملفات المؤقتة
                                 if os.path.exists(input_path): os.remove(input_path)
-                                if os.path.exists(output_path): os.remove(output_path)
+                            else:
+                                send_whatsapp_message(sender_id, "❌ فشل تحميل الملف من خوادم واتساب.")
                         else:
                             send_whatsapp_message(sender_id, "يرجى إرسال ملف Excel فقط (.xlsx) لمعالجته.")
                     
                     elif msg.get('type') == 'text':
-                        text = msg.get('text', {}).get('body', '').lower()
-                        send_whatsapp_message(sender_id, "أهلاً بك! أنا بوت معالجة الطلبات. أرسل لي ملف Excel يحتوي على طلباتك وسأقوم بتنظيمها لك فوراً.")
+                        send_whatsapp_message(sender_id, "أهلاً بك! أنا بوت معالجة الطلبات. أرسل لي ملف Excel يحتوي على طلباتك وسأقوم بتنظيمها وإرسال كل طلب في رسالة منفصلة.")
 
     return jsonify({"status": "ok"}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-                                
