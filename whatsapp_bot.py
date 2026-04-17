@@ -35,7 +35,6 @@ def upload_whatsapp_media(file_path, mime_type):
     except: return None
 
 def send_whatsapp_image_with_caption(to, media_id, caption):
-    """إرسال صورة مع نص أسفلها (Caption)"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {
@@ -50,7 +49,7 @@ def send_whatsapp_image_with_caption(to, media_id, caption):
     requests.post(url, headers=headers, json=data)
 
 def handle_pdf_logic(sender_id, media_content):
-    """تحويل بوالص الـ PDF لصور مع إرسال رقم الطلب في رسالة أسفل الصورة"""
+    """تحويل بوالص الـ PDF لصور مع استخراج رقم الطلب بذكاء ومرونة"""
     try:
         doc = fitz.open(stream=media_content, filetype="pdf")
         send_whatsapp_message(sender_id, f"📄 جاري استخراج {len(doc)} بوالص شحن... ⏳")
@@ -59,8 +58,9 @@ def handle_pdf_logic(sender_id, media_content):
             page = doc.load_page(page_num)
             text = page.get_text()
             
-            # البحث عن رقم يبدأ بـ 2 ومكون من 9 أرقام (بجوار Saudi Arabia)
-            order_match = re.search(r'Saudi Arabia\s+(2\d{8})', text)
+            # التعديل الجديد: البحث عن أي رقم يبدأ بـ 2 ومكون من 9 أرقام في الصفحة كاملة
+            # هذا يضمن صيد الرقم حتى لو تغير مكانه أو التنسيق
+            order_match = re.search(r'\b(2\d{8})\b', text)
             order_number = order_match.group(1) if order_match else "غير محدد"
 
             # تحويل الصفحة لصورة بجودة عالية
@@ -71,7 +71,6 @@ def handle_pdf_logic(sender_id, media_content):
                 image_id = upload_whatsapp_media(tmp_img.name, "image/png")
                 
                 if image_id:
-                    # إرسال الصورة مع رقم الطلب كـ Caption
                     caption_text = f"📦 رقم الطلب: {order_number}"
                     send_whatsapp_image_with_caption(sender_id, image_id, caption_text)
                 
@@ -87,53 +86,4 @@ def handle_document_async(sender_id, doc):
     filename = doc.get('filename', '').lower()
     media_id = doc.get('id')
     
-    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-    res = requests.get(f"https://graph.facebook.com/v18.0/{media_id}", headers=headers).json()
-    media_content = requests.get(res.get('url'), headers=headers).content
-
-    if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
-        # كود الإكسل (المهمة الأولى)
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-            tmp.write(media_content)
-            path = tmp.name
-        try:
-            result = process_excel_orders_to_list(path)
-            if result:
-                for cat in ["riyadh", "others"]:
-                    msgs = result.get(cat, [])
-                    if msgs:
-                        send_whatsapp_message(sender_id, "📍 الرياض:" if cat == "riyadh" else "📍 باقي المناطق:")
-                        for m in msgs:
-                            send_whatsapp_message(sender_id, m)
-                            time.sleep(1)
-        finally:
-            if os.path.exists(path): os.remove(path)
-
-    elif 'pdf' in mime_type or filename.endswith('.pdf'):
-        # كود البوالص (المهمة الثانية)
-        handle_pdf_logic(sender_id, media_content)
-
-@app.route('/webhook', methods=['GET', 'POST'])
-def webhook():
-    if request.method == 'GET':
-        if request.args.get('hub.verify_token') == VERIFY_TOKEN:
-            return request.args.get('hub.challenge'), 200
-        return 'Forbidden', 403
-
-    data = request.json
-    try:
-        msg = data['entry'][0]['changes'][0]['value']['messages'][0]
-        msg_id = msg.get('id')
-        sender_id = msg.get('from')
-
-        if msg_id in processed_messages: return jsonify({"status": "ok"}), 200
-        processed_messages.add(msg_id)
-
-        if msg.get('type') == 'document':
-            threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
-    except: pass
-    return jsonify({"status": "ok"}), 200
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-    
+    headers = {"Authorization": f"
