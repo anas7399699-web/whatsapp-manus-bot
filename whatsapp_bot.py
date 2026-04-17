@@ -13,6 +13,9 @@ ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 
+# --- نظام منع التكرار (ذاكرة البوت) ---
+processed_messages = set()
+
 def send_whatsapp_message(to, text):
     """إرسال رسالة نصية عبر WhatsApp API"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -49,11 +52,10 @@ def download_whatsapp_media(media_id):
     return None
 
 def handle_document_async(sender_id, doc):
-    """معالجة الملف في الخلفية لتجنب تكرار Meta"""
+    """معالجة الملف في الخلفية"""
     mime_type = doc.get('mime_type', '')
     filename = doc.get('filename', 'file.xlsx')
     
-    # التأكد من صيغة الملف
     if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
         send_whatsapp_message(sender_id, "📥 تم استلام الملف. جاري معالجة الطلبات... ⏳")
         
@@ -64,7 +66,6 @@ def handle_document_async(sender_id, doc):
                 input_path = tmp_in.name
             
             try:
-                # معالجة ملف الإكسل عبر ملف process_orders
                 result = process_excel_orders_to_list(input_path)
                 
                 if result:
@@ -73,14 +74,12 @@ def handle_document_async(sender_id, doc):
                     total = len(riyadh_msgs) + len(others_msgs)
                     
                     if total > 0:
-                        # 1. إرسال طلبات الرياض أولاً
                         if riyadh_msgs:
                             send_whatsapp_message(sender_id, "📍 سأبدأ الآن بإرسال طلبات مدينة الرياض:")
                             for i, r_msg in enumerate(riyadh_msgs, 1):
                                 send_whatsapp_message(sender_id, f"📦 طلب {i}/{len(riyadh_msgs)}:\n\n{r_msg}")
-                                time.sleep(1) # زيادة بسيطة في الوقت لتجنب حظر واتساب
+                                time.sleep(1)
                         
-                        # 2. إرسال طلبات باقي المناطق
                         if others_msgs:
                             send_whatsapp_message(sender_id, "📍 سأبدأ الآن بإرسال طلبات باقي المناطق:")
                             for i, o_msg in enumerate(others_msgs, 1):
@@ -90,54 +89,4 @@ def handle_document_async(sender_id, doc):
                         send_whatsapp_message(sender_id, "🏁 تم الانتهاء من إرسال جميع الطلبات بنجاح.")
                     else:
                         send_whatsapp_message(sender_id, "❌ لم أجد أي طلبات 'قيد التنفيذ' في هذا الملف.")
-            except Exception as e:
-                print(f"Error processing excel: {str(e)}")
-                send_whatsapp_message(sender_id, "❌ حدث خطأ أثناء معالجة الملف.")
-            finally:
-                if os.path.exists(input_path):
-                    os.remove(input_path)
-        else:
-            send_whatsapp_message(sender_id, "❌ فشل تحميل الملف من سيرفرات واتساب.")
-    else:
-        send_whatsapp_message(sender_id, "⚠️ يرجى إرسال ملف بصيغة Excel (.xlsx) فقط.")
-
-@app.route('/webhook', methods=['GET', 'POST'])
-def webhook():
-    # التحقق من الـ Webhook (يحدث مرة واحدة عند الربط)
-    if request.method == 'GET':
-        mode = request.args.get('hub.mode')
-        token = request.args.get('hub.verify_token')
-        challenge = request.args.get('hub.challenge')
-        if mode == 'subscribe' and token == VERIFY_TOKEN:
-            return challenge, 200
-        return 'Forbidden', 403
-
-    # استقبال الرسائل الفعلية
-    data = request.json
-    if data.get('object') == 'whatsapp_business_account':
-        for entry in data.get('entry', []):
-            for change in entry.get('changes', []):
-                value = change.get('value', {})
-                messages = value.get('messages', [])
-                for msg in messages:
-                    sender_id = msg.get('from')
                     
-                    # إذا كانت الرسالة ملف إكسل
-                    if msg.get('type') == 'document':
-                        doc = msg.get('document')
-                        # تفعيل الـ Threading: شغل المعالجة في الخلفية واستمر في الكود
-                        thread = threading.Thread(target=handle_document_async, args=(sender_id, doc))
-                        thread.start()
-                    
-                    # إذا كانت الرسالة نصية
-                    elif msg.get('type') == 'text':
-                        send_whatsapp_message(sender_id, "مرحباً أنس! أرسل لي ملف Excel وسأقوم بفرز طلبات الرياض أولاً ثم باقي المناطق وإرسالها لك.")
-
-    # الرد الفوري بـ 200 OK - هذا يمنع تكرار الرسالة 3 مرات
-    return jsonify({"status": "ok"}), 200
-
-if __name__ == '__main__':
-    # تشغيل التطبيق على المنفذ المحدد
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
-            
