@@ -8,31 +8,33 @@ import io
 import fitz  # PyMuPDF
 from PIL import Image
 from flask import Flask, request, jsonify
-import google.generativeai as genai  # إستيراد مكتبة الذكاء الاصطناعي
+import google.generativeai as genai 
 from process_orders import process_excel_orders_to_list
 
 app = Flask(__name__)
 
-# الإعدادات من بيئة Render
+# --- الإعدادات من بيئة Render ---
 ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 
-# إعداد الذكاء الاصطناعي Gemini
+# --- إعداد الذكاء الاصطناعي Gemini ---
 genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
 ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 def get_ai_response(user_text):
-    """دالة للحصول على رد ذكي من Gemini"""
+    """دالة الرد كمساعد شخصي ذكي لأنس"""
     try:
-        # يمكنك تعديل الرسالة أدناه لتغيير طريقة رد البوت
-        response = ai_model.generate_content(f"أجب باختصار كخدمة عملاء لمتجر أليزا: {user_text}")
+        # تعليمات شخصية البوت
+        instruction = f"أنت المساعد الشخصي الذكي والتقني لأنس. أجب عليه بذكاء واختصار. هو مهندس ومحاضر أوتوكاد. نص الرسالة: {user_text}"
+        response = ai_model.generate_content(instruction)
         return response.text
     except Exception as e:
         print(f"AI Error: {e}")
-        return "أهلاً أنس! أرسل ملف Excel لفرز الطلبات أو PDF لاستخراج البوالص."
+        # رد احتياطي في حال فشل الاتصال بجوجل
+        return "أهلاً أنس! أنا معك، كيف يمكنني مساعدتك الآن؟"
 
-# ذاكرة مؤقتة لمنع التكرار في الجلسة الواحدة
+# ذاكرة مؤقتة لمنع التكرار
 processed_messages = set()
 
 def send_whatsapp_message(to, text):
@@ -59,46 +61,35 @@ def send_whatsapp_image_with_caption(to, media_id, caption):
         "messaging_product": "whatsapp",
         "to": to,
         "type": "image",
-        "image": {
-            "id": media_id,
-            "caption": caption
-        }
+        "image": {"id": media_id, "caption": caption}
     }
     requests.post(url, headers=headers, json=data)
 
 def handle_pdf_logic(sender_id, media_content):
-    """تحويل بوالص الـ PDF لصور واستخراج رقم الطلب بذكاء"""
+    """استخراج بوالص الشحن من الـ PDF"""
     try:
         doc = fitz.open(stream=media_content, filetype="pdf")
-        send_whatsapp_message(sender_id, f"📄 جاري استخراج {len(doc)} بوالص شحن... ⏳")
+        send_whatsapp_message(sender_id, f"📄 أنس، جاري استخراج {len(doc)} بوالص شحن لك... ⏳")
         
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             text = page.get_text()
-            
-            # البحث عن رقم يبدأ بـ 2 ومكون من 9 أرقام في أي مكان بالصفحة
             order_match = re.search(r'\b(2\d{8})\b', text)
             order_number = order_match.group(1) if order_match else "غير محدد"
 
-            # تحويل الصفحة لصورة بجودة عالية
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-            
             with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_img:
                 pix.save(tmp_img.name)
                 image_id = upload_whatsapp_media(tmp_img.name, "image/png")
-                
                 if image_id:
-                    caption_text = f"📦 رقم الطلب: {order_number}"
-                    send_whatsapp_image_with_caption(sender_id, image_id, caption_text)
-                
+                    send_whatsapp_image_with_caption(sender_id, image_id, f"📦 طلب رقم: {order_number}")
                 os.remove(tmp_img.name)
-        
-        send_whatsapp_message(sender_id, "✅ تم إرسال جميع البوالص بنجاح.")
+        send_whatsapp_message(sender_id, "✅ أنس، انتهيت من معالجة جميع بوالص الـ PDF.")
     except Exception as e:
-        print(f"PDF Error: {str(e)}")
-        send_whatsapp_message(sender_id, "❌ حدث خطأ في معالجة ملف البوالص.")
+        send_whatsapp_message(sender_id, f"❌ حدث خطأ في معالجة الـ PDF: {str(e)}")
 
 def handle_document_async(sender_id, doc):
+    """معالجة ملفات الإكسل والـ PDF في الخلفية"""
     mime_type = doc.get('mime_type', '')
     filename = doc.get('filename', '').lower()
     media_id = doc.get('id')
@@ -110,9 +101,8 @@ def handle_document_async(sender_id, doc):
     
     media_content = requests.get(media_url, headers=headers).content
 
-    # مسار ملفات الإكسل
     if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
-        send_whatsapp_message(sender_id, "📥 جاري فرز طلبات الإكسل لمتجر أليزا... ⏳")
+        send_whatsapp_message(sender_id, "📥 أبشر أنس، جاري فرز ملف الإكسل الآن... ⏳")
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             tmp.write(media_content)
             path = tmp.name
@@ -128,8 +118,6 @@ def handle_document_async(sender_id, doc):
                             time.sleep(1)
         finally:
             if os.path.exists(path): os.remove(path)
-
-    # مسار ملفات الـ PDF
     elif 'pdf' in mime_type or filename.endswith('.pdf'):
         handle_pdf_logic(sender_id, media_content)
 
@@ -146,32 +134,27 @@ def webhook():
         msg_id = msg.get('id')
         sender_id = msg.get('from')
         
-        # --- حل مشكلة التكرار القديم: الفلترة الزمنية ---
         msg_timestamp = int(msg.get('timestamp')) 
         current_time = int(time.time())
-        
-        if (current_time - msg_timestamp) > 300:
-            return jsonify({"status": "ignored_old_message"}), 200
-
-        if msg_id in processed_messages: 
-            return jsonify({"status": "duplicate"}), 200
+        if (current_time - msg_timestamp) > 300 or msg_id in processed_messages:
+            return jsonify({"status": "ignored"}), 200
         
         processed_messages.add(msg_id)
-        if len(processed_messages) > 1000: processed_messages.clear()
 
         if msg.get('type') == 'document':
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
+        
         elif msg.get('type') == 'text':
-            # --- الجزء المحدث: استخدام الذكاء الاصطناعي للرد على النصوص ---
             user_text = msg.get('text', {}).get('body')
+            # --- هنا يتم استدعاء المساعد الشخصي الذكي بدلاً من النص القديم ---
             reply = get_ai_response(user_text)
             send_whatsapp_message(sender_id, reply)
             
     except:
         pass
-        
     return jsonify({"status": "ok"}), 200
 
 if __name__ == '__main__':
+    # بورت 10000 هو الافتراضي لـ Render
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
-        
+    
