@@ -8,6 +8,7 @@ import io
 import fitz  # PyMuPDF
 from PIL import Image
 from flask import Flask, request, jsonify
+import google.generativeai as genai  # إستيراد مكتبة الذكاء الاصطناعي
 from process_orders import process_excel_orders_to_list
 
 app = Flask(__name__)
@@ -16,6 +17,20 @@ app = Flask(__name__)
 ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
+
+# إعداد الذكاء الاصطناعي Gemini
+genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+ai_model = genai.GenerativeModel('gemini-1.5-flash')
+
+def get_ai_response(user_text):
+    """دالة للحصول على رد ذكي من Gemini"""
+    try:
+        # يمكنك تعديل الرسالة أدناه لتغيير طريقة رد البوت
+        response = ai_model.generate_content(f"أجب باختصار كخدمة عملاء لمتجر أليزا: {user_text}")
+        return response.text
+    except Exception as e:
+        print(f"AI Error: {e}")
+        return "أهلاً أنس! أرسل ملف Excel لفرز الطلبات أو PDF لاستخراج البوالص."
 
 # ذاكرة مؤقتة لمنع التكرار في الجلسة الواحدة
 processed_messages = set()
@@ -135,10 +150,8 @@ def webhook():
         msg_timestamp = int(msg.get('timestamp')) 
         current_time = int(time.time())
         
-        # إذا كانت الرسالة أقدم من 5 دقائق (300 ثانية)، يتم تجاهلها
         if (current_time - msg_timestamp) > 300:
             return jsonify({"status": "ignored_old_message"}), 200
-        # ---------------------------------------------
 
         if msg_id in processed_messages: 
             return jsonify({"status": "duplicate"}), 200
@@ -149,7 +162,10 @@ def webhook():
         if msg.get('type') == 'document':
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
         elif msg.get('type') == 'text':
-            send_whatsapp_message(sender_id, "أهلاً أنس! أرسل ملف Excel لفرز الطلبات أو PDF لاستخراج البوالص.")
+            # --- الجزء المحدث: استخدام الذكاء الاصطناعي للرد على النصوص ---
+            user_text = msg.get('text', {}).get('body')
+            reply = get_ai_response(user_text)
+            send_whatsapp_message(sender_id, reply)
             
     except:
         pass
@@ -157,5 +173,5 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-            
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+        
