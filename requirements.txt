@@ -6,3 +6,4 @@ gunicorn
 xlrd
 pymupdf
 pillow
+google-generativeai
