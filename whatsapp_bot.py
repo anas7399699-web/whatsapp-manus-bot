@@ -1,6 +1,5 @@
-import os
+Import os
 import requests
-import re
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -31,40 +30,22 @@ def webhook():
         sender = data['entry'][0]['changes'][0]['value']['messages'][0]['from']
         
         # استخراج رقم الطلب (بافتراض أنه رقم مكون من عدة خانات)
+        import re
         order_id = re.findall(r'\d+', msg_body)
         
         if order_id:
             id_val = order_id[0]
-            
-            # --- كود الربط مع n8n المخصص لمتجر سلة ---
-            n8n_webhook_url = "https://n8n-setup-x4if.onrender.com/webhook-test/get-salla-order"
-            payload_to_n8n = {
-                "order_id": id_val,
-                "phone": sender,
-                "message_text": msg_body
-            }
-            try:
-                # إرسال رقم الطلب والبيانات إلى n8n فوراً
-                requests.post(n8n_webhook_url, json=payload_to_n8n, timeout=5)
-            except Exception as e:
-                print(f"Error sending to n8n: {e}")
-            # ----------------------------------------
-
             if "عنوان" in msg_body:
-                send_whatsapp_message(sender, f"🔍 جاري فحص تفاصيل وجلب عنوان الطلب {id_val} من متجر أليزا عبر n8n...")
+                # هنا سنضيف كود جلب العنوان من سلة لاحقاً
+                send_whatsapp_message(sender, f"جاري جلب عنوان الطلب {id_val} من متجر أليزا...")
             elif "تم التنفيذ" in msg_body:
-                send_whatsapp_message(sender, f"⚙️ جاري تحديث حالة الطلب {id_val} إلى تم التنفيذ عبر n8n...")
-            else:
-                # إذا أرسل الرقم فقط بدون كلمات مفتاحية
-                send_whatsapp_message(sender, f"👍 تم استلام رقم الطلب {id_val}. جاري استخراج البيانات والتحقق من التفاصيل...")
+                # هنا سنضيف كود تغيير الحالة في سلة لاحقاً
+                send_whatsapp_message(sender, f"سيتم تغيير حالة الطلب {id_val} إلى تم التنفيذ.")
         else:
-            send_whatsapp_message(sender, "أهلاً بك، يرجى كتابة رقم الطلب مع الأمر (مثلاً: عنوان الطلب 123)")
+            send_whatsapp_message(sender, "أهلاً أنس، يرجى كتابة رقم الطلب مع الأمر (مثلاً: عنوان الطلب 123)")
             
-    except Exception as e: 
-        print(f"Webhook Error: {e}")
-        
+    except: pass
     return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-                              
