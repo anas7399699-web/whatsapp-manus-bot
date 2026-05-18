@@ -3,7 +3,9 @@ import requests
 import re
 from flask import Flask, request, jsonify
 
+
 app = Flask(__name__)
+
 
 # هذه المتغيرات سنضبطها في Render للأمان
 SALLA_TOKEN = os.getenv("SALLA_TOKEN")
@@ -11,27 +13,40 @@ META_TOKEN = os.getenv("META_TOKEN")
 PHONE_ID = os.getenv("PHONE_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "aliza_secure_pass")
 
+
 def send_whatsapp_message(to, text):
     url = f"https://graph.facebook.com/v17.0/{PHONE_ID}/messages"
     headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
     payload = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
-    requests.post(url, json=payload, headers=headers)
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers )
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        print(f"WhatsApp message sent successfully to {to}. Response: {response.status_code} - {response.text}")
+        return True
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending WhatsApp message to {to}: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Response content: {e.response.text}")
+        return False
 
-@app.route('/webhook', methods=['GET'])
+
+@app.route("/webhook", methods=["GET"])
 def verify():
     if request.args.get("hub.verify_token") == VERIFY_TOKEN:
         return request.args.get("hub.challenge")
     return "Failed", 403
 
-@app.route('/webhook', methods=['POST'])
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
     try:
-        msg_body = data['entry'][0]['changes'][0]['value']['messages'][0]['text']['body']
-        sender = data['entry'][0]['changes'][0]['value']['messages'][0]['from']
+        msg_body = data["entry"][0]["changes"][0]["value"]["messages"][0]["text"]["body"]
+        sender = data["entry"][0]["changes"][0]["value"]["messages"][0]["from"]
         
         # استخراج رقم الطلب (بافتراض أنه رقم مكون من عدة خانات)
-        order_id = re.findall(r'\d+', msg_body)
+        order_id = re.findall(r'\\d+', msg_body)
         
         if order_id:
             id_val = order_id[0]
@@ -45,10 +60,11 @@ def webhook():
             }
             try:
                 # إرسال رقم الطلب والبيانات إلى n8n فوراً
-                requests.post(n8n_webhook_url, json=payload_to_n8n, timeout=5)
+                requests.post(n8n_webhook_url, json=payload_to_n8n, timeout=5 )
             except Exception as e:
                 print(f"Error sending to n8n: {e}")
             # ----------------------------------------
+
 
             if "عنوان" in msg_body:
                 send_whatsapp_message(sender, f"🔍 جاري فحص تفاصيل وجلب عنوان الطلب {id_val} من متجر أليزا عبر n8n...")
@@ -65,5 +81,6 @@ def webhook():
         
     return jsonify({"status": "ok"}), 200
 
+
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(host=\'0.0.0.0\', port=int(os.environ.get(\'PORT\', 5000)))
