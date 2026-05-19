@@ -107,10 +107,25 @@ def handle_document_async(sender_id, doc):
                 for cat in ["riyadh", "others"]:
                     msgs = result.get(cat, [])
                     if msgs:
-                        send_whatsapp_message(sender_id, "📍 الرياض:" if cat == "riyadh" else "📍 باقي المناطق:")
-                        for m in msgs:
+                        # إرسال عنوان المنطقة أولاً
+                        send_whatsapp_message(sender_id, "📍 *الرياض:*" if cat == "riyadh" else "📍 *باقي المناطق:*")
+                        time.sleep(3) # مهلة أمان بعد العنوان
+                        
+                        # إرسال كل طلب في رسالة منفصلة تماماً مع نظام الحماية من الحظر
+                        for index, m in enumerate(msgs):
                             send_whatsapp_message(sender_id, m)
-                            time.sleep(1)
+                            
+                            # مهلة أمان أساسية (2 ثانية) بين كل رسالة وأخرى لضمان وصولها بالترتيب
+                            time.sleep(2)
+                            
+                            # نظام الاستراحة الذكي: كل 10 رسائل متتالية، انتظر 6 ثوانٍ إضافية لتتنفس السيرفرات
+                            if (index + 1) % 10 == 0:
+                                print(f"DEBUG: Sent {index + 1} messages, taking a short break...")
+                                time.sleep(6)
+                                
+        except Exception as e:
+            print(f"Excel processing error: {str(e)}")
+            send_whatsapp_message(sender_id, "❌ حدث خطأ أثناء فرز ملف الإكسل.")
         finally:
             if os.path.exists(path): os.remove(path)
 
@@ -149,7 +164,8 @@ def webhook():
         if msg.get('type') == 'document':
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
         elif msg.get('type') == 'text':
-            send_whatsapp_message(sender_id, "أهلاً أنس! أرسل ملف Excel لفرز الطلبات أو PDF لاستخراج البوالص.")
+            # تحديث نص الرسالة الترحيبية لتعكس التعديلات الأخيرة
+            send_whatsapp_message(sender_id, "أهلاً أنس! أرسل ملف Excel لفرز طلبات (قيد التنفيذ وجاري التوصيل) في رسائل منفصلة، أو PDF لاستخراج البوالص.")
             
     except:
         pass
@@ -158,4 +174,3 @@ def webhook():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-            
