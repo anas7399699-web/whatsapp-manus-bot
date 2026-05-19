@@ -1,184 +1,161 @@
 import os
 import requests
-import re
-import tempfile
 import time
-import pandas as pd
+import threading
+import tempfile
+import re
+import io
+import fitz  # PyMuPDF
+from PIL import Image
 from flask import Flask, request, jsonify
+from process_orders import process_excel_orders_to_list
 
 app = Flask(__name__)
 
-# المتغيرات الخاصة بك من بيئة Render
-SALLA_TOKEN = os.getenv("SALLA_TOKEN")
-META_TOKEN = os.getenv("META_TOKEN")
-PHONE_ID = os.getenv("PHONE_ID")
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "aliza_secure_pass")
+# الإعدادات من بيئة Render
+ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
+PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
+VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 
-# ذاكرة مؤقتة لمنع تكرار معالجة نفس الرسالة في نفس الوقت
+# ذاكرة مؤقتة لمنع التكرار في الجلسة الواحدة
 processed_messages = set()
 
-# الذاكرة المؤقتة لملف الإكسل والعدادات
-excel_memory = {}
-stats = {"total": 0, "processed": 0}
-
 def send_whatsapp_message(to, text):
-    url = f"https://graph.facebook.com/v17.0/{PHONE_ID}/messages"
-    headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
-    payload = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
-    
+    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
+    data = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
+    requests.post(url, headers=headers, json=data)
+
+def upload_whatsapp_media(file_path, mime_type):
+    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/media"
+    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+    files = {'file': (os.path.basename(file_path), open(file_path, 'rb'), mime_type)}
+    data = {'messaging_product': 'whatsapp'}
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        print(f"WhatsApp message sent successfully to {to}.")
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending WhatsApp message to {to}: {e}")
-        return False
+        response = requests.post(url, headers=headers, files=files, data=data)
+        return response.json().get('id')
+    except:
+        return None
 
-@app.route('/webhook', methods=['GET'])
-def verify():
-    if request.args.get("hub.verify_token") == VERIFY_TOKEN:
-        return request.args.get("hub.challenge")
-    return "Failed", 403
+def send_whatsapp_image_with_caption(to, media_id, caption):
+    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
+    data = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "image",
+        "image": {
+            "id": media_id,
+            "caption": caption
+        }
+    }
+    requests.post(url, headers=headers, json=data)
 
-@app.route('/webhook', methods=['POST'])
+def handle_pdf_logic(sender_id, media_content):
+    """تحويل بوالص الـ PDF لصور واستخراج رقم الطلب بذكاء"""
+    try:
+        doc = fitz.open(stream=media_content, filetype="pdf")
+        send_whatsapp_message(sender_id, f"📄 جاري استخراج {len(doc)} بوالص شحن... ⏳")
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            text = page.get_text()
+            
+            # البحث عن رقم يبدأ بـ 2 ومكون من 9 أرقام في أي مكان بالصفحة
+            order_match = re.search(r'\b(2\d{8})\b', text)
+            order_number = order_match.group(1) if order_match else "غير محدد"
+
+            # تحويل الصفحة لصورة بجودة عالية
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_img:
+                pix.save(tmp_img.name)
+                image_id = upload_whatsapp_media(tmp_img.name, "image/png")
+                
+                if image_id:
+                    caption_text = f"📦 رقم الطلب: {order_number}"
+                    send_whatsapp_image_with_caption(sender_id, image_id, caption_text)
+                
+                os.remove(tmp_img.name)
+        
+        send_whatsapp_message(sender_id, "✅ تم إرسال جميع البوالص بنجاح.")
+    except Exception as e:
+        print(f"PDF Error: {str(e)}")
+        send_whatsapp_message(sender_id, "❌ حدث خطأ في معالجة ملف البوالص.")
+
+def handle_document_async(sender_id, doc):
+    mime_type = doc.get('mime_type', '')
+    filename = doc.get('filename', '').lower()
+    media_id = doc.get('id')
+    
+    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+    res = requests.get(f"https://graph.facebook.com/v18.0/{media_id}", headers=headers).json()
+    media_url = res.get('url')
+    if not media_url: return
+    
+    media_content = requests.get(media_url, headers=headers).content
+
+    # مسار ملفات الإكسل
+    if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
+        send_whatsapp_message(sender_id, "📥 جاري فرز طلبات الإكسل لمتجر أليزا... ⏳")
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+            tmp.write(media_content)
+            path = tmp.name
+        try:
+            result = process_excel_orders_to_list(path)
+            if result:
+                for cat in ["riyadh", "others"]:
+                    msgs = result.get(cat, [])
+                    if msgs:
+                        send_whatsapp_message(sender_id, "📍 الرياض:" if cat == "riyadh" else "📍 باقي المناطق:")
+                        for m in msgs:
+                            send_whatsapp_message(sender_id, m)
+                            time.sleep(1)
+        finally:
+            if os.path.exists(path): os.remove(path)
+
+    # مسار ملفات الـ PDF
+    elif 'pdf' in mime_type or filename.endswith('.pdf'):
+        handle_pdf_logic(sender_id, media_content)
+
+@app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
-    global excel_memory, stats
-    data = request.json
-    
-    try:
-        # استخراج معلومات الرسالة الأساسية
-        message_data = data['entry'][0]['changes'][0]['value']['messages'][0]
-        msg_id = message_data.get('id')
-        sender = message_data.get('from')
-        msg_type = message_data.get('type')
+    if request.method == 'GET':
+        if request.args.get('hub.verify_token') == VERIFY_TOKEN:
+            return request.args.get('hub.challenge'), 200
+        return 'Forbidden', 403
 
-        # منع التكرار
-        if msg_id in processed_messages:
+    data = request.json
+    try:
+        msg = data['entry'][0]['changes'][0]['value']['messages'][0]
+        msg_id = msg.get('id')
+        sender_id = msg.get('from')
+        
+        # --- حل مشكلة التكرار القديم: الفلترة الزمنية ---
+        msg_timestamp = int(msg.get('timestamp')) 
+        current_time = int(time.time())
+        
+        # إذا كانت الرسالة أقدم من 5 دقائق (300 ثانية)، يتم تجاهلها
+        if (current_time - msg_timestamp) > 300:
+            return jsonify({"status": "ignored_old_message"}), 200
+        # ---------------------------------------------
+
+        if msg_id in processed_messages: 
             return jsonify({"status": "duplicate"}), 200
+        
         processed_messages.add(msg_id)
         if len(processed_messages) > 1000: processed_messages.clear()
 
-        # -----------------------------------------------------------
-        # المسار الأول: استقبال ملف الإكسل وحفظه بالذاكرة
-        # -----------------------------------------------------------
-        if msg_type == 'document':
-            doc = message_data['document']
-            filename = doc.get('filename', '').lower()
-            mime_type = doc.get('mime_type', '')
-            media_id = doc.get('id')
+        if msg.get('type') == 'document':
+            threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
+        elif msg.get('type') == 'text':
+            send_whatsapp_message(sender_id, "أهلاً أنس! أرسل ملف Excel لفرز الطلبات أو PDF لاستخراج البوالص.")
             
-            if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
-                send_whatsapp_message(sender, "📥 جاري قراءة ملف الإكسل وحفظ البيانات للبحث السريع... ⏳")
-                
-                # جلب رابط تحميل الملف من ميتا
-                headers = {"Authorization": f"Bearer {META_TOKEN}"}
-                res = requests.get(f"https://graph.facebook.com/v17.0/{media_id}", headers=headers).json()
-                media_url = res.get('url')
-                
-                if media_url:
-                    media_content = requests.get(media_url, headers=headers).content
-                    
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-                        tmp.write(media_content)
-                        path = tmp.name
-                    
-                    try:
-                        df = pd.read_excel(path)
-                        
-                        # تصفير وإعادة شحن الذاكرة
-                        excel_memory = {}
-                        stats["total"] = len(df)
-                        stats["processed"] = 0
-                        
-                        for _, row in df.iterrows():
-                            # تنظيف رقم الطلب وتحويله لنص
-                            order_id = str(row.get('رقم الطلب', '')).split('.')[0].strip()
-                            excel_memory[order_id] = {
-                                "address": row.get('العنوان', 'غير متوفر'),
-                                "phone": row.get('رقم المستلم', 'غير متوفر'),
-                                "name": row.get('اسم المستلم', 'غير متوفر'),
-                                "status": "pending"
-                            }
-                        
-                        initial_report = (
-                            f"📊 *تقرير الملف المرفوع:*\n\n"
-                            f"🔹 إجمالي الطلبات في الملف: {stats['total']}\n"
-                            f"⏳ طلبات بانتظار الاستخراج: {stats['total']}\n"
-                            f"✅ تم تنفيذ: 0\n\n"
-                            f"جاهز الآن! أرسل أرقام الطلبات (كل رقم في سطر) لطباعة العناوين فوراً."
-                        )
-                        send_whatsapp_message(sender, initial_report)
-                        
-                    except Exception as e:
-                        print(f"Excel Error: {e}")
-                        send_whatsapp_message(sender, "❌ حدث خطأ أثناء تحليل بيانات ملف الإكسل. تأكد من أسماء الأعمدة.")
-                    finally:
-                        if os.path.exists(path): os.remove(path)
-            else:
-                send_whatsapp_message(sender, "⚠️ يرجى إرسال ملف بصيغة Excel فقط.")
-
-        # -----------------------------------------------------------
-        # المسار الثاني: استقبال أرقام الطلبات نصياً والبحث عنها
-        # -----------------------------------------------------------
-        elif msg_type == 'text':
-            msg_body = message_data['text']['body'].strip()
-            
-            # استخراج كافة الأرقام المكونة من 5 خانات فأكثر من الرسالة مجتمعة
-            order_ids = re.findall(r'\b\d{5,}\b', msg_body)
-            
-            if order_ids and excel_memory:
-                responses = []
-                found_count = 0
-                
-                for oid in order_ids:
-                    if oid in excel_memory:
-                        # إذا لم يتم معالجته مسبقاً، يضاف للعداد ويتحول المتبقي
-                        if excel_memory[oid]["status"] == "pending":
-                            stats["processed"] += 1
-                            excel_memory[oid]["status"] = "completed"
-                        
-                        data = excel_memory[oid]
-                        found_count += 1
-                        formatted_res = (
-                            f"العنوان/ {data['address']}\n"
-                            f"رقم الطلبية/ {oid}\n"
-                            f"رقم المستلم/ {data['phone']}\n"
-                            f"اسم المستلم/ {data['name']}"
-                        )
-                        responses.append(formatted_res)
-                    else:
-                        responses.append(f"❌ الطلب {oid}: غير موجود في الملف المرفوع.")
-                
-                # حساب الإحصائيات المتبقية
-                remaining = stats["total"] - stats["processed"]
-                summary_report = (
-                    f"📝 *تم استخراج {found_count} عناوين بنجاح*\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"📊 *الحالة العامة للملف:*\n"
-                    f"✅ إجمالي المنفذ حتى الآن: {stats['processed']}\n"
-                    f"⏳ المتبقي عليك: {remaining}\n"
-                    f"🔢 إجمالي طلبات الملف: {stats['total']}"
-                )
-                
-                # إرسال قائمة العناوين كاملة في رسالة واحدة تفصل بينها خطوط
-                full_addresses = "\n\n----------------\n\n".join(responses)
-                send_whatsapp_message(sender, full_addresses)
-                
-                # إرسال تقرير العدادات بعد ثانية
-                time.sleep(1)
-                send_whatsapp_message(sender, summary_report)
-                
-            elif order_ids and not excel_memory:
-                send_whatsapp_message(sender, "⚠️ الذاكرة فارغة حالياً. يرجى إرسال ملف الإكسل أولاً ليتمكن البوت من قراءته والبحث فيه.")
-            else:
-                send_whatsapp_message(sender, "أهلاً بك يا أنس! أرسل ملف Excel لفرز وجدولة الطلبات، أو أرسل أرقام الطلبات مباشرة لاستخراج العناوين.")
-
-    except Exception as e:
-        print(f"General Webhook Error: {e}")
+    except:
+        pass
         
     return jsonify({"status": "ok"}), 200
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-        
+            
