@@ -5,18 +5,20 @@ import os
 def process_excel_orders_to_list(file_path):
     """
     يعالج ملف الإكسل ويعيد قاموساً يحتوي على رسائل الرياض ورسائل باقي المناطق بشكل منفصل.
+    يشمل طلبات (قيد التنفيذ) و (جاري التوصيل).
     """
     try:
         df = pd.read_excel(file_path)
         
-        # تصفية الصفوف التي تحتوي على "قيد التنفيذ"
-        mask = df.apply(lambda row: row.astype(str).str.contains('قيد التنفيذ', na=False).any(), axis=1)
+        # التعديل هنا: الفلترة لتشمل "قيد التنفيذ" أو "جاري التوصيل"
+        mask = df.apply(lambda row: row.astype(str).str.contains('قيد التنفيذ|جاري التوصيل', na=False).any(), axis=1)
         df_in_progress = df[mask].copy()
         
         if df_in_progress.empty:
             return {"riyadh": [], "others": []}
             
-        print(f"DEBUG: Found {len(df_in_progress)} orders with 'قيد التنفيذ'.")
+        # تحديث رسالة الـ DEBUG لتظهر إجمالي الحالتين
+        print(f"DEBUG: Found {len(df_in_progress)} orders with 'قيد التنفيذ' or 'جاري التوصيل'.")
         
         # تحديد أسماء الأعمدة بشكل مرن
         city_col = 'المدينة' if 'المدينة' in df.columns else 'City'
@@ -57,7 +59,6 @@ def process_excel_orders_to_list(file_path):
             full_address = " ".join(address_parts)
             
             # 2. منطق الأولوية الصارم لبيانات المستلم
-            # التحقق من اسم المستلم
             recipient_name = ""
             val_rec_name = str(row[rec_name_col]).strip() if rec_name_col in row and pd.notna(row[rec_name_col]) else ""
             val_cust_name = str(row[cust_name_col]).strip() if cust_name_col in row and pd.notna(row[cust_name_col]) else ""
