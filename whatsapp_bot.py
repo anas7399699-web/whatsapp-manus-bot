@@ -9,6 +9,7 @@ import fitz  # PyMuPDF
 from PIL import Image
 from flask import Flask, request, jsonify
 from process_orders import process_excel_orders_to_list
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -19,6 +20,13 @@ VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 
 # ذاكرة مؤقتة لمنع التكرار في الجلسة الواحدة
 processed_messages = set()
+processed_salla_orders = set()  # لمنع تكرار معالجة نفس الطلب القادم من سلة لحظياً
+
+# قفل برمجى لضمان إرسال رسائل سلة واحدة تلو الأخرى بأمان دون تداخل عند التحديد الجماعي
+salla_lock = threading.Lock()
+
+# رقم الواتساب الفعلي الخاص بك (أنس) لاستقبل الطلبات التلقائية المباشرة من سلة
+MY_WHATSAPP_NUMBER = "967739969981"
 
 def send_whatsapp_message(to, text):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -111,7 +119,7 @@ def handle_document_async(sender_id, doc):
                         send_whatsapp_message(sender_id, "📍 *الرياض:*" if cat == "riyadh" else "📍 *باقي المناطق:*")
                         time.sleep(3) # مهلة أمان بعد العنوان
                         
-                        # إرسال كل طلب في رسالة منفصلة تماماً مع نظام الحماية من الحظر
+                        # إرسال كل طلب في رسالة منفصلة تماماً مع نظام الحماية من الحظر للأعداد الكبيرة فوق 50 طلباً
                         for index, m in enumerate(msgs):
                             send_whatsapp_message(sender_id, m)
                             
@@ -132,6 +140,66 @@ def handle_document_async(sender_id, doc):
     # مسار ملفات الـ PDF
     elif 'pdf' in mime_type or filename.endswith('.pdf'):
         handle_pdf_logic(sender_id, media_content)
+
+# دالة معالجة طلبات الـ Webhook القادمة من سلة في الخلفية مع ميزة الطابور الآمن للكميات الضخمة
+def process_salla_webhook_async(order_data):
+    # استخدام الـ Lock لضمان خروج رسائل التحديد الجماعي واحدة تلو الأخرى بالتسلسل لتفادي الحظر
+    with salla_lock:
+        try:
+            order_id = order_data.get('id', 'غير متوفر')
+            
+            # منع معالجة الطلب نفسه بشكل مكرر ومفاجئ
+            if order_id in processed_salla_orders:
+                return
+            processed_salla_orders.add(order_id)
+            if len(processed_salla_orders) > 1000: processed_salla_orders.clear()
+
+            # 1. استخراج المدينة
+            shipping_info = order_data.get('shipping', {})
+            city = shipping_info.get('address', {}).get('city', '')
+            if not city:
+                city = order_data.get('customer', {}).get('city', '')
+
+            # 2. استخراج العنوان بالتفصيل
+            address_parts = []
+            street = shipping_info.get('address', {}).get('street', '')
+            district = shipping_info.get('address', {}).get('district', '')
+            if street: address_parts.append(street)
+            if district: address_parts.append(f"حي {district}")
+            
+            short_address = shipping_info.get('address', {}).get('short_address')
+            if short_address: address_parts.append(f"العنوان المختصر {short_address}")
+            
+            full_address = " ".join(address_parts) if address_parts else city
+
+            # 3. حل مشكلة الإهداء (بيانات المستلم المهدى إليه ضد العميل المشتري المباشر)
+            recipient_name = shipping_info.get('receiver', {}).get('name')
+            recipient_mobile = shipping_info.get('receiver', {}).get('phone')
+
+            if not recipient_name:
+                recipient_name = order_data.get('customer', {}).get('first_name', '') + " " + order_data.get('customer', {}).get('last_name', '')
+            if not recipient_mobile:
+                recipient_mobile = order_data.get('customer', {}).get('mobile', '')
+
+            mobile_str = str(recipient_mobile).strip()
+            if mobile_str.startswith('5') and len(mobile_str) == 9:
+                mobile_str = '966' + mobile_str
+            elif mobile_str.startswith('05') and len(mobile_str) == 10:
+                mobile_str = '966' + mobile_str[1:]
+            elif mobile_str.startswith('+'):
+                mobile_str = mobile_str.replace('+', '')
+
+            # 4. صياغة الرسالة النهائية بنفس تنسيقك المعتاد
+            final_msg = f"العنوان / {full_address}\nرقم الطلبية/ {order_id}\nرقم المستلم / +{mobile_str}\nاسم المستلم/ {recipient_name.strip()}"
+            
+            # إرسال الرسالة إلى رقم هاتفك الفعلي المسجل في الكود أعلاه
+            send_whatsapp_message(MY_WHATSAPP_NUMBER, final_msg)
+            
+            # مهلة أمان إجبارية (ثانيتين) بين كل طلب وطلب لحمايتك عند النقل الجماعي للطلبات
+            time.sleep(2)
+
+        except Exception as e:
+            print(f"Async Salla Process Error: {str(e)}")
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -172,5 +240,42 @@ def webhook():
         
     return jsonify({"status": "ok"}), 200
 
+# 🌐 مسار الـ Webhook المخصص لاستقبال ربط متجر سلة بشكل تلقائي ومباشر وآمن 🌐
+@app.route('/salla-webhook', methods=['POST'])
+def salla_webhook():
+    data = request.json
+    if not data:
+        return jsonify({"status": "no_data"}), 400
+
+    try:
+        event = data.get('event')
+        order_data = data.get('data', {})
+        order_id = order_data.get('id', 'غير متوفر')
+        status = order_data.get('status', {}).get('id')
+
+        # الفلترة: نشتغل فقط إذا تحول الطلب إلى "جاري التوصيل"
+        if status == 'delivering' or event == 'order.status.updated':
+            # فلتر حماية زمني لمنع معالجة وإرسال المئات من الطلبات القديمة جداً الموجودة بالقسم سابقاً
+            updated_at_str = order_data.get('updated_at', '')
+            if updated_at_str:
+                try:
+                    updated_at = datetime.strptime(updated_at_str, "%Y-%m-%d %H:%M:%S")
+                    current_time = datetime.now()
+                    time_diff = (current_time - updated_at).total_seconds()
+                    # إذا كان التحديث أقدم من 5 دقائق (300 ثانية)، يتم تجاهله تماماً كحماية
+                    if time_diff > 300:
+                        return jsonify({"status": "ignored_old_order"}), 200
+                except:
+                    pass
+
+            # نقل معالجة الطلب التلقائي إلى الخلفية لتطبيق نظام الطابور الآمن لحمايتك من الحظر
+            threading.Thread(target=process_salla_webhook_async, args=(order_data,)).start()
+
+    except Exception as e:
+        print(f"Salla Webhook Route Error: {str(e)}")
+        
+    return jsonify({"status": "received"}), 200
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+                                                          
