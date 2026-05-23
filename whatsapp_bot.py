@@ -145,7 +145,7 @@ def handle_document_async(sender_id, doc):
 def process_salla_webhook_async(shipment_data):
     with salla_lock:
         try:
-            # في أحداث الشحنات، رقم الطلب يكون موجوداً داخل حقل order_id
+            # استخراج رقم الطلب من حقل order_id الخاص بالشحنة
             order_id = shipment_data.get('order_id', 'غير متوفر')
             
             if order_id in processed_salla_orders:
@@ -153,18 +153,15 @@ def process_salla_webhook_async(shipment_data):
             processed_salla_orders.add(order_id)
             if len(processed_salla_orders) > 1000: processed_salla_orders.clear()
 
-            # 1. استخراج المدينة والعنوان من بيانات الشحن مباشرة
+            # 1. استخراج المدينة والعنوان
             city = shipment_data.get('city', '')
-            shipment_type = shipment_data.get('type', '') # نوع الشحن (مثلاَ: شركة الشحن)
-            
-            # صياغة العنوان المتوفر
             full_address = city if city else "غير محدد"
 
-            # 2. استخراج بيانات المستلم (الاسم والهاتف)
+            # 2. استخراج بيانات العميل المستلم للشحنة
             recipient_name = shipment_data.get('customer_name', '')
             recipient_mobile = shipment_data.get('customer_phone', '')
 
-            # تنسيق رقم الجوال للوتساب
+            # تنسيق رقم الجوال لتفادي مشاكل الإرسال الدولية
             mobile_str = str(recipient_mobile).strip()
             if mobile_str.startswith('5') and len(mobile_str) == 9:
                 mobile_str = '966' + mobile_str
@@ -173,10 +170,10 @@ def process_salla_webhook_async(shipment_data):
             elif mobile_str.startswith('+'):
                 mobile_str = mobile_str.replace('+', '')
 
-            # 3. صياغة الرسالة النهائية بالتنسيق المعتاد لمتجر أليزا
+            # 3. صياغة الرسالة بالتنسيق المعتاد الخاص بمتجر أليزا
             final_msg = f"العنوان / {full_address}\nرقم الطلبية/ {order_id}\nرقم المستلم / +{mobile_str}\nاسم المستلم/ {recipient_name.strip()}"
             
-            # إرسال الرسالة إلى رقمك
+            # إرسال الرسالة التلقائية المباشرة إلى رقمك
             send_whatsapp_message(MY_WHATSAPP_NUMBER, final_msg)
             
             time.sleep(2)
@@ -219,10 +216,11 @@ def webhook():
         
     return jsonify({"status": "ok"}), 200
 
-# 🌐 المسار المعدل لاستقبال أحداث الشحنات المتوفرة في صلاحيات متجرك 🌐
+# 🌐 مسار الـ Webhook المستقر والمتوافق مع صلاحيات الشحنات المتوفرة بمتجرك 🌐
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
     if request.method == 'GET':
+        print("Salla webhook verification test received via GET.")
         return "Webhook is active", 200
 
     if request.method == 'POST':
@@ -232,24 +230,10 @@ def salla_webhook():
 
         try:
             event = data.get('event')
-            shipment_data = data.get('data', {}) # البيانات هنا تمثل الشحنة مباشرة
+            shipment_data = data.get('data', {})
 
-            # نشتغل عند حدوث "تم تحديث شحنة" أو "تم إنشاء شحنة"
+            # التفاعل الفوري مع أحداث الشحنات المتاحة بلوحة تحكم متجرك
             if event in ['shipment.updated', 'shipment.created'] or 'shipment' in event:
-                
-                # فلتر حماية زمني
-                created_at_str = shipment_data.get('created_at', '')
-                if created_at_str:
-                    try:
-                        created_at = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
-                        current_time = datetime.now()
-                        time_diff = (current_time - created_at).total_seconds()
-                        if time_diff > 300:
-                            return jsonify({"status": "ignored_old_shipment"}), 200
-                    except:
-                        pass
-
-                # معالجة الشحنة في الخلفية
                 threading.Thread(target=process_salla_webhook_async, args=(shipment_data,)).start()
 
         except Exception as e:
