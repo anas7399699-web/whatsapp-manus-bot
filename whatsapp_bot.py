@@ -241,41 +241,47 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 # 🌐 مسار الـ Webhook المخصص لاستقبال ربط متجر سلة بشكل تلقائي ومباشر وآمن 🌐
-@app.route('/salla-webhook', methods=['POST'])
+@app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
-    data = request.json
-    if not data:
-        return jsonify({"status": "no_data"}), 400
+    # 1. التجاوب مع طلب سلة التجريبي والتحقق من صحة الرابط (GET)
+    if request.method == 'GET':
+        print("Salla webhook verification test received via GET.")
+        return "Webhook is active", 200
 
-    try:
-        event = data.get('event')
-        order_data = data.get('data', {})
-        order_id = order_data.get('id', 'غير متوفر')
-        status = order_data.get('status', {}).get('id')
+    # 2. استقبال بيانات التحديث التلقائي للطلبات (POST)
+    if request.method == 'POST':
+        data = request.json
+        if not data:
+            return jsonify({"status": "no_data"}), 400
 
-        # الفلترة: نشتغل فقط إذا تحول الطلب إلى "جاري التوصيل"
-        if status == 'delivering' or event == 'order.status.updated':
-            # فلتر حماية زمني لمنع معالجة وإرسال المئات من الطلبات القديمة جداً الموجودة بالقسم سابقاً
-            updated_at_str = order_data.get('updated_at', '')
-            if updated_at_str:
-                try:
-                    updated_at = datetime.strptime(updated_at_str, "%Y-%m-%d %H:%M:%S")
-                    current_time = datetime.now()
-                    time_diff = (current_time - updated_at).total_seconds()
-                    # إذا كان التحديث أقدم من 5 دقائق (300 ثانية)، يتم تجاهله تماماً كحماية
-                    if time_diff > 300:
-                        return jsonify({"status": "ignored_old_order"}), 200
-                except:
-                    pass
+        try:
+            event = data.get('event')
+            order_data = data.get('data', {})
+            order_id = order_data.get('id', 'غير متوفر')
+            status = order_data.get('status', {}).get('id')
 
-            # نقل معالجة الطلب التلقائي إلى الخلفية لتطبيق نظام الطابور الآمن لحمايتك من الحظر
-            threading.Thread(target=process_salla_webhook_async, args=(order_data,)).start()
+            # الفلترة: نشتغل فقط إذا تحول الطلب إلى "جاري التوصيل"
+            if status == 'delivering' or event == 'order.status.updated':
+                # فلتر حماية زمني لمنع معالجة وإرسال المئات من الطلبات القديمة جداً الموجودة بالقسم سابقاً
+                updated_at_str = order_data.get('updated_at', '')
+                if updated_at_str:
+                    try:
+                        updated_at = datetime.strptime(updated_at_str, "%Y-%m-%d %H:%M:%S")
+                        current_time = datetime.now()
+                        time_diff = (current_time - updated_at).total_seconds()
+                        # إذا كان التحديث أقدم من 5 دقائق (300 ثانية)، يتم تجاهله تماماً كحماية
+                        if time_diff > 300:
+                            return jsonify({"status": "ignored_old_order"}), 200
+                    except:
+                        pass
 
-    except Exception as e:
-        print(f"Salla Webhook Route Error: {str(e)}")
-        
-    return jsonify({"status": "received"}), 200
+                # نقل معالجة الطلب التلقائي إلى الخلفية لتطبيق نظام الطابور الآمن لحمايتك من الحظر
+                threading.Thread(target=process_salla_webhook_async, args=(order_data,)).start()
+
+        except Exception as e:
+            print(f"Salla Webhook Route Error: {str(e)}")
+            
+        return jsonify({"status": "received"}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-                                                          
