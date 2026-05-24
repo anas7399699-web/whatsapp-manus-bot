@@ -36,27 +36,42 @@ def process_excel_orders_to_list(file_path):
         order_id_col = 'رقم الطلب' if 'رقم الطلب' in df.columns else 'Order ID'
 
         def format_order(row):
-            # 1. بناء العنوان بالتفصيل
+            # 1. بناء العنوان بالتفصيل (تم التعديل لإظهار المدينة دائماً في البداية)
             address_parts = []
-            main_address = str(row[main_addr_col]) if main_addr_col in row and pd.notna(row[main_addr_col]) else ""
-            if main_address:
-                address_parts.append(main_address)
-            else:
-                address_parts.append(str(row[city_col]) if city_col in row and pd.notna(row[city_col]) else "")
             
+            # استخراج اسم المدينة وإضافتها كأول عنصر دائماً
+            city_name = str(row[city_col]).strip() if city_col in row and pd.notna(row[city_col]) else ""
+            if city_name and city_name.lower() != 'nan':
+                address_parts.append(city_name)
+            
+            # إضافة العنوان الرئيسي بعد المدينة
+            main_address = str(row[main_addr_col]).strip() if main_addr_col in row and pd.notna(row[main_addr_col]) else ""
+            if main_address and main_address.lower() != 'nan' and main_address != city_name:
+                address_parts.append(main_address)
+            
+            # إضافة باقي تفاصيل العنوان الفرعية إن وجدت
             if short_addr_col in row and pd.notna(row[short_addr_col]):
-                address_parts.append(f"العنوان المختصر {row[short_addr_col]}")
+                val_short = str(row[short_addr_col]).strip()
+                if val_short and val_short.lower() != 'nan':
+                    address_parts.append(f"العنوان المختصر {val_short}")
+                    
             if building_no_col in row and pd.notna(row[building_no_col]):
-                b_no = str(row[building_no_col]).split('.')[0]
-                address_parts.append(f"رقم المبنى {b_no}")
+                b_no = str(row[building_no_col]).split('.')[0].strip()
+                if b_no and b_no.lower() != 'nan':
+                    address_parts.append(f"رقم المبنى {b_no}")
+                    
             if additional_no_col in row and pd.notna(row[additional_no_col]):
-                a_no = str(row[additional_no_col]).split('.')[0]
-                address_parts.append(f"الرقم الاضافي {a_no}")
+                a_no = str(row[additional_no_col]).split('.')[0].strip()
+                if a_no and a_no.lower() != 'nan':
+                    address_parts.append(f"الرقم الاضافي {a_no}")
+                    
             if postal_code_col in row and pd.notna(row[postal_code_col]):
-                p_code = str(row[postal_code_col]).split('.')[0]
-                address_parts.append(f"الرمز البريدي {p_code}")
+                p_code = str(row[postal_code_col]).split('.')[0].strip()
+                if p_code and p_code.lower() != 'nan':
+                    address_parts.append(f"الرمز البريدي {p_code}")
                 
-            full_address = " ".join(address_parts)
+            # دمج الأجزاء كلها بـ " - " لتنسيق أنيق وواضح للمناديب
+            full_address = " - ".join(address_parts) if address_parts else "غير محدد"
             
             # 2. منطق الأولوية الصارم لبيانات المستلم
             recipient_name = ""
@@ -121,3 +136,4 @@ def process_excel_orders(file_path, output_path):
             f.write("\n\n---\n\n".join(all_msgs))
         return True
     return False
+        
