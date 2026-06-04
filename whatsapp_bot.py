@@ -127,25 +127,15 @@ def handle_document_async(sender_id, doc):
 # ==================== دالة معالجة سلة (معدّلة بالكامل) ====================
 
 def process_salla_webhook_async(raw_data):
-    """
-    تستقبل raw_data وهو كائن data الكامل القادم من سلة،
-    ثم تستخرج بيانات الشحنة والعميل والعنوان بذكاء بغض النظر عن بنية الـ Payload.
-    """
     with salla_lock:
         try:
-            # -------------------------------------------------------
-            # الخطوة 1: تحديد مكان بيانات الشحنة بدقة
-            # سلة تضع البيانات أحياناً في data مباشرة، وأحياناً في data.shipment
-            # -------------------------------------------------------
+            # الخطوة 1: تحديد مكان بيانات الشحنة
             if 'shipment' in raw_data and isinstance(raw_data['shipment'], dict):
                 shipment = raw_data['shipment']
             else:
-                shipment = raw_data  # البيانات في الجذر مباشرة
+                shipment = raw_data
 
-            # -------------------------------------------------------
             # الخطوة 2: استخراج رقم الطلب
-            # يكون في order_id أو reference_id أو id
-            # -------------------------------------------------------
             order_id = (
                 shipment.get('order_id')
                 or shipment.get('reference_id')
@@ -163,10 +153,7 @@ def process_salla_webhook_async(raw_data):
             if len(processed_salla_orders) > 1000:
                 processed_salla_orders.clear()
 
-            # -------------------------------------------------------
             # الخطوة 3: استخراج بيانات العميل
-            # سلة تضع بيانات العميل في customer ككائن منفصل أو في جذر البيانات
-            # -------------------------------------------------------
             customer_obj = shipment.get('customer') or raw_data.get('customer') or {}
 
             recipient_name = (
@@ -185,11 +172,7 @@ def process_salla_webhook_async(raw_data):
                 or ''
             )
 
-            # -------------------------------------------------------
             # الخطوة 4: استخراج العنوان التفصيلي
-            # سلة تضع العنوان في shipping_address أو address ككائن
-            # نجمع: المدينة + الحي + الشارع
-            # -------------------------------------------------------
             address_obj = (
                 shipment.get('shipping_address')
                 or shipment.get('address')
@@ -202,26 +185,19 @@ def process_salla_webhook_async(raw_data):
             district = address_obj.get('district', '') or shipment.get('district', '') or raw_data.get('district', '')
             street   = address_obj.get('street', '')   or shipment.get('street', '')   or raw_data.get('street', '')
 
-            # بناء العنوان الكامل من الأجزاء المتوفرة فقط
             address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
             full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
 
-            # -------------------------------------------------------
-            # الخطوة 5: تنسيق رقم الجوال للإرسال الدولي
-            # -------------------------------------------------------
+            # الخطوة 5: تنسيق رقم الجوال
             mobile_str = str(recipient_mobile).strip().replace(' ', '').replace('-', '')
-
             if mobile_str.startswith('+'):
-                mobile_str = mobile_str[1:]          # أزل + فقط
+                mobile_str = mobile_str[1:]
             elif mobile_str.startswith('05') and len(mobile_str) == 10:
-                mobile_str = '966' + mobile_str[1:]  # 05xxxxxxxx → 9665xxxxxxxx
+                mobile_str = '966' + mobile_str[1:]
             elif mobile_str.startswith('5') and len(mobile_str) == 9:
-                mobile_str = '966' + mobile_str      # 5xxxxxxxx → 9665xxxxxxxx
-            # إذا كان يبدأ بـ 966 أو 967 أو أي كود دولي آخر → يبقى كما هو
+                mobile_str = '966' + mobile_str
 
-            # -------------------------------------------------------
             # الخطوة 6: صياغة الرسالة وإرسالها
-            # -------------------------------------------------------
             final_msg = (
                 f"العنوان / {full_address}\n"
                 f"رقم الطلبية / {order_id}\n"
@@ -235,6 +211,31 @@ def process_salla_webhook_async(raw_data):
 
         except Exception as e:
             print(f"[Salla] خطأ في المعالجة: {str(e)}")
+
+
+# ==================== Keep-Alive لمنع نوم Render ====================
+
+@app.route('/', methods=['GET', 'HEAD'])
+def home():
+    """مسار بسيط يمنع Render من اعتبار الخدمة معطلة ويُعيد 200 دائماً"""
+    return "Bot is running", 200
+
+def keep_alive():
+    """
+    خيط مستقل يرسل طلب GET لنفسه كل 10 دقائق
+    لمنع Render من إنامة الخدمة في الخطة المجانية
+    """
+    RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
+    if not RENDER_URL:
+        print("[KeepAlive] لم يتم تعيين RENDER_EXTERNAL_URL، سيتم تخطي Keep-Alive")
+        return
+    while True:
+        try:
+            time.sleep(600)  # كل 10 دقائق
+            requests.get(f"{RENDER_URL}/", timeout=10)
+            print("[KeepAlive] ✅ تم إيقاظ الخدمة بنجاح")
+        except Exception as e:
+            print(f"[KeepAlive] ⚠️ خطأ: {str(e)}")
 
 
 # ==================== مسار واتساب Webhook (بدون تعديل) ====================
@@ -274,16 +275,10 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 
-# ==================== مسار سلة Webhook (معدّل ومستقر) ====================
+# ==================== مسار سلة Webhook ====================
 
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
-    """
-    مسار مستقر لاستقبال أحداث الشحنات من منصة سلة.
-    - GET: يُعيد 200 دائماً لتجاوز اختبار التحقق وتفادي خطأ 405
-    - POST: يستقبل الـ Payload ويعالج أحداث الشحنات
-    """
-
     # ---------- GET: طلب التحقق من سلة ----------
     if request.method == 'GET':
         print("[Salla] GET verification request received.")
@@ -291,8 +286,6 @@ def salla_webhook():
 
     # ---------- POST: الحدث الفعلي ----------
     if request.method == 'POST':
-
-        # قراءة الـ JSON بأمان — بعض إصدارات سلة لا ترسل Content-Type صحيح
         data = request.get_json(force=True, silent=True)
 
         # 🔍 DEBUG مؤقت: اطبع كل ما يصل من سلة في اللوغز
@@ -300,7 +293,6 @@ def salla_webhook():
 
         if not data:
             print("[Salla] POST received but no JSON data found.")
-            # نُعيد 200 دائماً حتى لا تُعيد سلة المحاولة بشكل متكرر
             return jsonify({"status": "no_data"}), 200
 
         print(f"[Salla] Event received: {data.get('event', 'unknown')}")
@@ -309,7 +301,6 @@ def salla_webhook():
             event = data.get('event', '')
             raw_data = data.get('data', {})
 
-            # التحقق من أن الحدث متعلق بالشحنات
             if 'shipment' in str(event).lower():
                 threading.Thread(
                     target=process_salla_webhook_async,
@@ -321,11 +312,12 @@ def salla_webhook():
         except Exception as e:
             print(f"[Salla] Route error: {str(e)}")
 
-        # دائماً أعد 200 فوراً لإخبار سلة باستقبال الطلب
         return jsonify({"status": "received"}), 200
 
 
 # ==================== تشغيل التطبيق ====================
 
 if __name__ == '__main__':
+    # تشغيل Keep-Alive في الخلفية لمنع نوم Render
+    threading.Thread(target=keep_alive, daemon=True).start()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
