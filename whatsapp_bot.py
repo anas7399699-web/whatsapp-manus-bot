@@ -277,11 +277,11 @@ def webhook():
 
 # ==================== مسار سلة Webhook ====================
 
-@app.route('/salla-webhook', methods=['GET', 'POST'])
+@app.route('/salla-webhook', methods=['GET', 'POST', 'HEAD'])
 def salla_webhook():
-    # ---------- GET: طلب التحقق من سلة ----------
-    if request.method == 'GET':
-        print("[Salla] GET verification request received.")
+    # ---------- HEAD/GET: طلب التحقق من سلة ----------
+    if request.method in ['GET', 'HEAD']:
+        print(f"[Salla] {request.method} verification request received.")
         return "Webhook is active", 200
 
     # ---------- POST: الحدث الفعلي ----------
