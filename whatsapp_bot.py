@@ -18,7 +18,7 @@ ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 
-# ذاكرة مؤقتة لمنع التكرار في الجلسة الواحدة
+# ذاكرة مؤقتة لمنع تكرار في الجلسة الواحدة
 processed_messages = set()
 processed_salla_orders = set()
 
@@ -35,12 +35,12 @@ def send_whatsapp_message(to, text):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
-    requests.post(url, headers=headers, json=data)
+    requests.post(url, headers=headers, json=data )
 
 def upload_whatsapp_media(file_path, mime_type):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/media"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-    files = {'file': (os.path.basename(file_path), open(file_path, 'rb'), mime_type)}
+    files = {'file': (os.path.basename(file_path ), open(file_path, 'rb'), mime_type)}
     data = {'messaging_product': 'whatsapp'}
     try:
         response = requests.post(url, headers=headers, files=files, data=data)
@@ -57,7 +57,7 @@ def send_whatsapp_image_with_caption(to, media_id, caption):
         "type": "image",
         "image": {"id": media_id, "caption": caption}
     }
-    requests.post(url, headers=headers, json=data)
+    requests.post(url, headers=headers, json=data )
 
 def handle_pdf_logic(sender_id, media_content):
     try:
@@ -89,7 +89,7 @@ def handle_document_async(sender_id, doc):
     media_id = doc.get('id')
     
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-    res = requests.get(f"https://graph.facebook.com/v18.0/{media_id}", headers=headers).json()
+    res = requests.get(f"https://graph.facebook.com/v18.0/{media_id}", headers=headers ).json()
     media_url = res.get('url')
     if not media_url: return
     
@@ -124,18 +124,16 @@ def handle_document_async(sender_id, doc):
         handle_pdf_logic(sender_id, media_content)
 
 
-# ==================== دالة معالجة سلة (معدّلة بالكامل) ====================
+# ==================== دالة معالجة سلة (بدون تعديل منطقي) ====================
 
 def process_salla_webhook_async(raw_data):
     with salla_lock:
         try:
-            # الخطوة 1: تحديد مكان بيانات الشحنة
             if 'shipment' in raw_data and isinstance(raw_data['shipment'], dict):
                 shipment = raw_data['shipment']
             else:
                 shipment = raw_data
 
-            # الخطوة 2: استخراج رقم الطلب
             order_id = (
                 shipment.get('order_id')
                 or shipment.get('reference_id')
@@ -145,7 +143,6 @@ def process_salla_webhook_async(raw_data):
             )
             order_id = str(order_id)
 
-            # منع معالجة نفس الطلب مرتين
             if order_id in processed_salla_orders:
                 print(f"[Salla] تم تجاهل طلب مكرر: {order_id}")
                 return
@@ -153,7 +150,6 @@ def process_salla_webhook_async(raw_data):
             if len(processed_salla_orders) > 1000:
                 processed_salla_orders.clear()
 
-            # الخطوة 3: استخراج بيانات العميل
             customer_obj = shipment.get('customer') or raw_data.get('customer') or {}
 
             recipient_name = (
@@ -172,7 +168,6 @@ def process_salla_webhook_async(raw_data):
                 or ''
             )
 
-            # الخطوة 4: استخراج العنوان التفصيلي
             address_obj = (
                 shipment.get('shipping_address')
                 or shipment.get('address')
@@ -188,7 +183,6 @@ def process_salla_webhook_async(raw_data):
             address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
             full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
 
-            # الخطوة 5: تنسيق رقم الجوال
             mobile_str = str(recipient_mobile).strip().replace(' ', '').replace('-', '')
             if mobile_str.startswith('+'):
                 mobile_str = mobile_str[1:]
@@ -197,7 +191,6 @@ def process_salla_webhook_async(raw_data):
             elif mobile_str.startswith('5') and len(mobile_str) == 9:
                 mobile_str = '966' + mobile_str
 
-            # الخطوة 6: صياغة الرسالة وإرسالها
             final_msg = (
                 f"العنوان / {full_address}\n"
                 f"رقم الطلبية / {order_id}\n"
@@ -217,28 +210,21 @@ def process_salla_webhook_async(raw_data):
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
-    """مسار بسيط يمنع Render من اعتبار الخدمة معطلة ويُعيد 200 دائماً"""
     return "Bot is running", 200
 
 def keep_alive():
-    """
-    خيط مستقل يرسل طلب GET لنفسه كل 10 دقائق
-    لمنع Render من إنامة الخدمة في الخطة المجانية
-    """
     RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
     if not RENDER_URL:
-        print("[KeepAlive] لم يتم تعيين RENDER_EXTERNAL_URL، سيتم تخطي Keep-Alive")
         return
     while True:
         try:
-            time.sleep(600)  # كل 10 دقائق
+            time.sleep(600)
             requests.get(f"{RENDER_URL}/", timeout=10)
-            print("[KeepAlive] ✅ تم إيقاظ الخدمة بنجاح")
-        except Exception as e:
-            print(f"[KeepAlive] ⚠️ خطأ: {str(e)}")
+        except:
+            pass
 
 
-# ==================== مسار واتساب Webhook (بدون تعديل) ====================
+# ==================== مسار واتساب Webhook ====================
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -275,39 +261,30 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 
-# ==================== مسار سلة Webhook ====================
+# ==================== مسار سلة Webhook (تم تعديله للربط) ====================
 
 @app.route('/salla-webhook', methods=['GET', 'POST', 'HEAD'])
 def salla_webhook():
-    # ---------- HEAD/GET: طلب التحقق من سلة ----------
+    # تعديل الربط: الاستجابة لطلبات التحقق
     if request.method in ['GET', 'HEAD']:
-        print(f"[Salla] {request.method} verification request received.")
+        print(f"[Salla] Verification request received via {request.method}")
         return "Webhook is active", 200
 
-    # ---------- POST: الحدث الفعلي ----------
     if request.method == 'POST':
         data = request.get_json(force=True, silent=True)
-
-        # 🔍 DEBUG مؤقت: اطبع كل ما يصل من سلة في اللوغز
-        print(f"[Salla RAW PAYLOAD]: {data}")
-
         if not data:
-            print("[Salla] POST received but no JSON data found.")
             return jsonify({"status": "no_data"}), 200
-
-        print(f"[Salla] Event received: {data.get('event', 'unknown')}")
 
         try:
             event = data.get('event', '')
             raw_data = data.get('data', {})
 
+            # معالجة الأحداث المتعلقة بالشحنات
             if 'carrier' in str(event).lower() or 'shipment' in str(event).lower():
                 threading.Thread(
                     target=process_salla_webhook_async,
                     args=(raw_data,)
                 ).start()
-            else:
-                print(f"[Salla] Ignored event: {event}")
 
         except Exception as e:
             print(f"[Salla] Route error: {str(e)}")
@@ -318,6 +295,6 @@ def salla_webhook():
 # ==================== تشغيل التطبيق ====================
 
 if __name__ == '__main__':
-    # تشغيل Keep-Alive في الخلفية لمنع نوم Render
     threading.Thread(target=keep_alive, daemon=True).start()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    
