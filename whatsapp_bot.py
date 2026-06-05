@@ -301,13 +301,13 @@ def salla_webhook():
             event = data.get('event', '')
             raw_data = data.get('data', {})
 
-            if 'shipment' in str(event).lower():
+            if 'carrier' in str(event).lower() or 'shipment' in str(event).lower():
                 threading.Thread(
                     target=process_salla_webhook_async,
                     args=(raw_data,)
                 ).start()
             else:
-                print(f"[Salla] Ignored non-shipment event: {event}")
+                print(f"[Salla] Ignored event: {event}")
 
         except Exception as e:
             print(f"[Salla] Route error: {str(e)}")
