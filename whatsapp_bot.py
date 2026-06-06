@@ -303,6 +303,18 @@ def salla_webhook():
         return jsonify({"status": "received"}), 200
 
 
+# ==================== مسار تشخيصي لاختبار إرساليات سلة ====================
+
+@app.route('/debug-salla', methods=['POST', 'GET'])
+def debug_salla():
+    if request.method == 'POST':
+        data = request.get_json(force=True, silent=True)
+        print(f"🔍 DEBUG - Received raw data: {data}")
+        print(f"🔍 DEBUG - Headers: {dict(request.headers)}")
+        return jsonify({"status": "debug_received"}), 200
+    return "Debug endpoint active - Send POST requests here to test", 200
+
+
 # ==================== تشغيل التطبيق ====================
 
 if __name__ == '__main__':
