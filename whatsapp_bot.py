@@ -28,7 +28,8 @@ salla_lock = threading.Lock()
 # رقم الواتساب الفعلي لاستقبال الطلبات التلقائية من سلة
 MY_WHATSAPP_NUMBER = "967739969981"
 
-# ==================== دوال واتساب ====================
+
+# ==================== دوال واتساب (بدون تعديل) ====================
 
 def send_whatsapp_message(to, text):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
@@ -111,6 +112,7 @@ def handle_document_async(sender_id, doc):
                             send_whatsapp_message(sender_id, m)
                             time.sleep(2)
                             if (index + 1) % 10 == 0:
+                                print(f"DEBUG: Sent {index + 1} messages, taking a short break...")
                                 time.sleep(6)
         except Exception as e:
             print(f"Excel processing error: {str(e)}")
@@ -121,42 +123,98 @@ def handle_document_async(sender_id, doc):
     elif 'pdf' in mime_type or filename.endswith('.pdf'):
         handle_pdf_logic(sender_id, media_content)
 
-# ==================== دالة معالجة سلة (المدمجة الجديدة) ====================
+
+# ==================== دالة معالجة سلة المحدثة لتقرأ المنتجات والمقاسات ====================
 
 def process_salla_webhook_async(raw_data):
     with salla_lock:
         try:
-            # تدعم هيكل (order) الجديد وهيكل الشحنات (shipment) القديم
-            data = raw_data.get('order', raw_data)
-            order_id = str(data.get('id') or data.get('order_id') or 'غير متوفر')
+            # استخراج رقم الطلب الذكي
+            order_id = str(
+                raw_data.get('id') 
+                or raw_data.get('order_id') 
+                or raw_data.get('reference_id') 
+                or 'غير متوفر'
+            )
 
             if order_id in processed_salla_orders:
+                print(f"[Salla] تم تجاهل طلب مكرر: {order_id}")
                 return
             processed_salla_orders.add(order_id)
-            if len(processed_salla_orders) > 1000: processed_salla_orders.clear()
+            if len(processed_salla_orders) > 1000:
+                processed_salla_orders.clear()
 
-            customer = data.get('customer', {})
-            name = customer.get('name') or f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
-            mobile = str(customer.get('mobile') or customer.get('phone') or '').replace('+', '').replace(' ', '')
+            # بيانات العميل
+            customer_obj = raw_data.get('customer') or {}
+            recipient_name = (
+                customer_obj.get('name')
+                or f"{customer_obj.get('first_name', '')} {customer_obj.get('last_name', '')}".strip()
+                or 'غير متوفر'
+            ).strip()
+
+            recipient_mobile = customer_obj.get('mobile') or customer_obj.get('phone') or ''
+
+            # بيانات العنوان
+            address_obj = raw_data.get('shipping_address') or raw_data.get('address') or {}
+            city     = address_obj.get('city', '')     or raw_data.get('city', '')
+            district = address_obj.get('district', '') or raw_data.get('district', '')
+            street   = address_obj.get('street', '')   or raw_data.get('street', '')
+
+            address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
+            full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
+
+            # تنسيق رقم الجوال دولياً
+            mobile_str = str(recipient_mobile).strip().replace(' ', '').replace('-', '')
+            if mobile_str.startswith('+'):
+                mobile_str = mobile_str[1:]
+            elif mobile_str.startswith('05') and len(mobile_str) == 10:
+                mobile_str = '966' + mobile_str[1:]
+            elif mobile_str.startswith('5') and len(mobile_str) == 9:
+                mobile_str = '966' + mobile_str
+
+            # 👗 استخراج المنتجات والمقاسات والألوان بالتفصيل 👗
+            items_summary = []
+            items = raw_data.get('items', [])
+            if items:
+                for item in items:
+                    product_name = item.get('name', 'منتج غير معروف')
+                    quantity = item.get('quantity', 1)
+                    
+                    # جلب الخيارات (مثل المقاس واللون المربوط بالمنتج)
+                    options_str = ""
+                    options = item.get('options', [])
+                    if options:
+                        opt_parts = []
+                        for opt in options:
+                            opt_name = opt.get('name', '') # مقاس أو لون
+                            opt_value = opt.get('value', '') # M أو أسود
+                            if opt_name and opt_value:
+                                opt_parts.append(f"{opt_name}: {opt_value}")
+                        if opt_parts:
+                            options_str = f" - [{', '.join(opt_parts)}]"
+                    
+                    items_summary.append(f"{product_name} (الكمية: {quantity}){options_str}")
             
-            addr = data.get('shipping_address') or data.get('address') or {}
-            full_addr = f"{addr.get('city','')} - {addr.get('district','')} - {addr.get('street','')}".strip(' -')
+            products_text = '\n- '.join(items_summary) if items_summary else 'لا يوجد تفاصيل منتجات'
 
-            # استخراج المنتجات والمقاسات والألوان
-            items_text = ""
-            for item in data.get('items', []):
-                opts = ", ".join([f"{o.get('name')}: {o.get('value')}" for o in item.get('options', [])])
-                items_text += f"\n- {item.get('name')} (كمية: {item.get('quantity')}) [{opts}]"
+            # صياغة الرسالة النهائية الاحترافية لمتجر أليزا
+            final_msg = (
+                f"**العنوان /** {full_address}\n"
+                f"**رقم الطلبية /** {order_id}\n"
+                f"**رقم المستلم /** +{mobile_str}\n"
+                f"**اسم المستلم /** {recipient_name}\n"
+                f"**المنتجات /**\n- {products_text}"
+            )
 
-            final_msg = f"العنوان / {full_addr}\nرقم الطلبية / {order_id}\nرقم المستلم / {mobile}\nاسم المستلم / {name}\nالمنتجات: {items_text}"
-
-            print(f"[Salla] إرسال طلب {order_id} → {MY_WHATSAPP_NUMBER}")
+            print(f"[Salla] إرسال طلب {order_id} ← {MY_WHATSAPP_NUMBER}")
             send_whatsapp_message(MY_WHATSAPP_NUMBER, final_msg)
             time.sleep(2)
-        except Exception as e:
-            print(f"[Salla] خطأ في المعالجة: {str(e)}")
 
-# ==================== Keep-Alive ====================
+        except Exception as e:
+            print(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
+
+
+# ==================== Keep-Alive لمنع نوم Render ====================
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
@@ -164,14 +222,17 @@ def home():
 
 def keep_alive():
     RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
-    if not RENDER_URL: return
+    if not RENDER_URL:
+        return
     while True:
         try:
             time.sleep(600)
             requests.get(f"{RENDER_URL}/", timeout=10)
-        except: pass
+        except:
+            pass
 
-# ==================== مسار واتساب ====================
+
+# ==================== مسار واتساب Webhook ====================
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -186,34 +247,64 @@ def webhook():
         msg_id = msg.get('id')
         sender_id = msg.get('from')
         
-        if msg_id in processed_messages: return jsonify({"status": "duplicate"}), 200
-        processed_messages.add(msg_id)
+        msg_timestamp = int(msg.get('timestamp'))
+        current_time = int(time.time())
         
+        if (current_time - msg_timestamp) > 300:
+            return jsonify({"status": "ignored_old_message"}), 200
+
+        if msg_id in processed_messages:
+            return jsonify({"status": "duplicate"}), 200
+        
+        processed_messages.add(msg_id)
+        if len(processed_messages) > 1000: processed_messages.clear()
+
         if msg.get('type') == 'document':
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
         elif msg.get('type') == 'text':
-            send_whatsapp_message(sender_id, "أهلاً أنس! أرسل ملف Excel أو PDF للمعالجة.")
-    except: pass
+            send_whatsapp_message(sender_id, "أهلاً أنس! أرسل ملف Excel لفرز طلبات (قيد التنفيذ وجاري التوصيل) في رسائل منفصلة، أو PDF لاستخراج البوالص.")
+    except:
+        pass
+        
     return jsonify({"status": "ok"}), 200
 
-# ==================== مسار سلة Webhook ====================
+
+# ==================== مسار سلة Webhook المعدل والمصلح بالكامل ====================
 
 @app.route('/salla-webhook', methods=['GET', 'POST', 'HEAD'])
 def salla_webhook():
-    if request.method in ['GET', 'HEAD']: return "Webhook is active", 200
-    
+    if request.method in ['GET', 'HEAD']:
+        print(f"[Salla] Verification request received via {request.method}")
+        return "Webhook is active", 200
+
     if request.method == 'POST':
-        data = request.get_json(force=True, silent=True) or {}
-        event = str(data.get('event', '')).lower()
-        raw_data = data.get('data', {})
-        
-        # التعديل: قبول أحداث الطلبات (order) وأحداث الشحن (shipment)
-        if any(x in event for x in ['order.', 'shipment', 'carrier']):
-            threading.Thread(target=process_salla_webhook_async, args=(raw_data,)).start()
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"status": "no_data"}), 200
+
+        try:
+            event = data.get('event', '')
+            raw_data = data.get('data', {})
             
+            print(f"📢 وصل إشعار جديد من سلة! الحدث: {event}")
+
+            # السماح بمعالجة أحداث الطلبات الحية (الإنشاء والتحديث) بجانب الشحنات
+            if any(x in str(event).lower() for x in ['order.created', 'order.updated', 'shipment', 'carrier']):
+                threading.Thread(
+                    target=process_salla_webhook_async,
+                    args=(raw_data,)
+                ).start()
+            else:
+                print(f"⚠️ تم تجاهل الحدث لأنه غير مدرج: {event}")
+
+        except Exception as e:
+            print(f"[Salla] Route error: {str(e)}")
+
         return jsonify({"status": "received"}), 200
+
+
+# ==================== تشغيل التطبيق ====================
 
 if __name__ == '__main__':
     threading.Thread(target=keep_alive, daemon=True).start()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-    
