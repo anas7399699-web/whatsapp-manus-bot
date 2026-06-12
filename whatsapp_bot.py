@@ -8,6 +8,7 @@ import fitz
 from PIL import Image
 from flask import Flask, request, jsonify
 from process_orders import process_excel_orders_to_list
+import pandas as pd
 
 app = Flask(__name__)
 
@@ -19,6 +20,7 @@ VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 # ذاكرة مؤقتة
 processed_messages = set()
 processed_salla_orders = set()
+user_temp_data = {}
 salla_lock = threading.Lock()
 MY_WHATSAPP_NUMBER = "967739969981"
 
@@ -74,6 +76,76 @@ def handle_pdf_logic(sender_id, media_content):
         send_whatsapp_message(sender_id, "❌ حدث خطأ في معالجة ملف البوالص.")
 
 
+def send_orders_as_messages(sender_id, orders, region_name):
+    """إرسال الطلبات كرسائل منفصلة"""
+    if not orders:
+        send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
+        return
+    
+    send_whatsapp_message(sender_id, f"📍 *{region_name}:*")
+    time.sleep(2)
+    
+    for index, order in enumerate(orders):
+        send_whatsapp_message(sender_id, order)
+        time.sleep(2)
+        if (index + 1) % 10 == 0:
+            time.sleep(6)
+
+
+def send_orders_as_excel(sender_id, orders, region_name):
+    """إرسال الطلبات كملف Excel واحد"""
+    if not orders:
+        send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
+        return
+    
+    try:
+        orders_data = []
+        for order_msg in orders:
+            order_dict = {}
+            lines = order_msg.split('\n')
+            for line in lines:
+                if 'العنوان /' in line:
+                    order_dict['العنوان'] = line.split('العنوان /')[1].strip()
+                elif 'رقم الطلبية /' in line:
+                    order_dict['رقم الطلبية'] = line.split('رقم الطلبية /')[1].strip()
+                elif 'رقم المستلم /' in line:
+                    order_dict['رقم المستلم'] = line.split('رقم المستلم /')[1].strip()
+                elif 'اسم المستلم /' in line:
+                    order_dict['اسم المستلم'] = line.split('اسم المستلم /')[1].strip()
+            orders_data.append(order_dict)
+        
+        df = pd.DataFrame(orders_data)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+            output_path = tmp.name
+            df.to_excel(output_path, index=False, sheet_name=region_name)
+        
+        media_id = upload_whatsapp_media(output_path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        
+        if media_id:
+            url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+            headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
+            data = {
+                "messaging_product": "whatsapp",
+                "to": sender_id,
+                "type": "document",
+                "document": {
+                    "id": media_id,
+                    "caption": f"📊 طلبات {region_name}\nإجمالي الطلبات: {len(orders)}",
+                    "filename": f"{region_name}_{len(orders)}_طلب.xlsx"
+                }
+            }
+            requests.post(url, headers=headers, json=data)
+            send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}")
+        else:
+            send_whatsapp_message(sender_id, f"❌ فشل في إرسال ملف {region_name}")
+        
+        os.remove(output_path)
+        
+    except Exception as e:
+        send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
+
+
 def handle_document_async(sender_id, doc):
     mime_type = doc.get('mime_type', '')
     filename = doc.get('filename', '').lower()
@@ -88,34 +160,42 @@ def handle_document_async(sender_id, doc):
     media_content = requests.get(media_url, headers=headers).content
 
     if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
-        send_whatsapp_message(sender_id, "📥 جاري فرز طلبات الإكسل... ⏳")
+        send_whatsapp_message(sender_id, "📥 جاري تحليل ملف الإكسل... ⏳")
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             tmp.write(media_content)
             path = tmp.name
+        
         try:
             result = process_excel_orders_to_list(path)
+            
             if result:
-                # إرسال طلبات الرياض
-                riyadh_msgs = result.get("riyadh", [])
-                if riyadh_msgs:
-                    send_whatsapp_message(sender_id, "📍 *الرياض:*")
-                    time.sleep(2)
-                    for m in riyadh_msgs:
-                        send_whatsapp_message(sender_id, m)
-                        time.sleep(2)
+                riyadh_orders = result.get("riyadh", [])
+                other_orders = result.get("others", [])
                 
-                # إرسال طلبات باقي المناطق
-                other_msgs = result.get("others", [])
-                if other_msgs:
-                    send_whatsapp_message(sender_id, "📍 *باقي المناطق:*")
-                    time.sleep(2)
-                    for m in other_msgs:
-                        send_whatsapp_message(sender_id, m)
-                        time.sleep(2)
-                        
+                user_temp_data[sender_id] = {
+                    "riyadh": riyadh_orders,
+                    "others": other_orders
+                }
+                
+                options = f"📊 *نتائج التحليل:*\n"
+                options += f"📍 الرياض: {len(riyadh_orders)} طلب\n"
+                options += f"🏠 باقي المناطق: {len(other_orders)} طلب\n\n"
+                options += "*اختر طريقة الاستلام:*\n\n"
+                options += "1️⃣ أرسل 'رياض رسائل'\n"
+                options += "2️⃣ أرسل 'رياض اكسل'\n"
+                options += "3️⃣ أرسل 'باقي رسائل'\n"
+                options += "4️⃣ أرسل 'باقي اكسل'\n"
+                options += "5️⃣ أرسل 'الكل اكسل'"
+                
+                send_whatsapp_message(sender_id, options)
+                
+            else:
+                send_whatsapp_message(sender_id, "❌ لم يتم العثور على بيانات")
+                
         except Exception as e:
-            print(f"Excel processing error: {str(e)}")
-            send_whatsapp_message(sender_id, "❌ حدث خطأ أثناء فرز ملف الإكسل.")
+            print(f"Excel error: {str(e)}")
+            send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
         finally:
             if os.path.exists(path):
                 os.remove(path)
@@ -151,7 +231,7 @@ def process_salla_webhook_async(shipment_data):
             send_whatsapp_message(MY_WHATSAPP_NUMBER, final_msg)
             time.sleep(2)
         except Exception as e:
-            print(f"Async Salla Shipment Process Error: {str(e)}")
+            print(f"Salla Error: {str(e)}")
 
 
 @app.route('/', methods=['GET', 'HEAD'])
@@ -187,8 +267,31 @@ def webhook():
 
         if msg.get('type') == 'document':
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
+            
         elif msg.get('type') == 'text':
-            send_whatsapp_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
+            text_body = msg.get('text', {}).get('body', '').lower()
+            
+            if sender_id in user_temp_data:
+                data_store = user_temp_data[sender_id]
+                riyadh_orders = data_store["riyadh"]
+                other_orders = data_store["others"]
+                del user_temp_data[sender_id]
+                
+                if "رياض رسائل" in text_body:
+                    send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
+                elif "رياض اكسل" in text_body or "رياض excel" in text_body:
+                    send_orders_as_excel(sender_id, riyadh_orders, "الرياض")
+                elif "باقي رسائل" in text_body:
+                    send_orders_as_messages(sender_id, other_orders, "باقي المناطق")
+                elif "باقي اكسل" in text_body or "باقي excel" in text_body:
+                    send_orders_as_excel(sender_id, other_orders, "باقي المناطق")
+                elif "الكل اكسل" in text_body or "الكل excel" in text_body:
+                    all_orders = riyadh_orders + other_orders
+                    send_orders_as_excel(sender_id, all_orders, "جميع الطلبات")
+                else:
+                    send_whatsapp_message(sender_id, "❌ خيار غير صحيح")
+            else:
+                send_whatsapp_message(sender_id, "أهلاً! أرسل ملف Excel")
             
     except Exception as e:
         print(f"Webhook error: {str(e)}")
@@ -199,7 +302,6 @@ def webhook():
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
     if request.method == 'GET':
-        print("Salla webhook verification test received via GET.")
         return "Webhook is active", 200
 
     if request.method == 'POST':
@@ -210,12 +312,10 @@ def salla_webhook():
         try:
             event = data.get('event')
             shipment_data = data.get('data', {})
-
-            if event in ['shipment.updated', 'shipment.created'] or 'shipment' in str(event):
+            if 'shipment' in str(event):
                 threading.Thread(target=process_salla_webhook_async, args=(shipment_data,)).start()
-
         except Exception as e:
-            print(f"Salla Webhook Route Error: {str(e)}")
+            print(f"Salla Error: {str(e)}")
             
         return jsonify({"status": "received"}), 200
 
