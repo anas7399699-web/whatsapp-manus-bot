@@ -77,7 +77,7 @@ def handle_pdf_logic(sender_id, media_content):
 
 
 def send_orders_as_messages(sender_id, orders, region_name):
-    """إرسال الطلبات كرسائل منفصلة"""
+    """إرسال الطلبات كرسائل منفصلة (نفس النظام القديم)"""
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
@@ -89,11 +89,14 @@ def send_orders_as_messages(sender_id, orders, region_name):
         send_whatsapp_message(sender_id, order)
         time.sleep(2)
         if (index + 1) % 10 == 0:
+            send_whatsapp_message(sender_id, f"⏳ تم إرسال {index + 1} من {len(orders)}...")
             time.sleep(6)
+    
+    send_whatsapp_message(sender_id, f"✅ تم إرسال {len(orders)} طلب لـ {region_name}")
 
 
 def send_orders_as_excel(sender_id, orders, region_name):
-    """إرسال الطلبات كملف Excel واحد"""
+    """إرسال الطلبات كملف Excel واحد - كل سطر في خانة منفصلة"""
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
@@ -101,20 +104,32 @@ def send_orders_as_excel(sender_id, orders, region_name):
     try:
         orders_data = []
         for order_msg in orders:
-            order_dict = {}
+            order_dict = {
+                'العنوان': '',
+                'رقم الطلبية': '',
+                'رقم المستلم': '',
+                'اسم المستلم': ''
+            }
+            
             lines = order_msg.split('\n')
             for line in lines:
                 if 'العنوان /' in line:
                     order_dict['العنوان'] = line.split('العنوان /')[1].strip()
                 elif 'رقم الطلبية /' in line:
                     order_dict['رقم الطلبية'] = line.split('رقم الطلبية /')[1].strip()
+                elif 'رقم الطلبية/' in line:
+                    order_dict['رقم الطلبية'] = line.split('رقم الطلبية/')[1].strip()
                 elif 'رقم المستلم /' in line:
                     order_dict['رقم المستلم'] = line.split('رقم المستلم /')[1].strip()
                 elif 'اسم المستلم /' in line:
                     order_dict['اسم المستلم'] = line.split('اسم المستلم /')[1].strip()
+                elif 'اسم المستلم/' in line:
+                    order_dict['اسم المستلم'] = line.split('اسم المستلم/')[1].strip()
+            
             orders_data.append(order_dict)
         
         df = pd.DataFrame(orders_data)
+        df = df[['العنوان', 'رقم الطلبية', 'رقم المستلم', 'اسم المستلم']]
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             output_path = tmp.name
@@ -131,17 +146,19 @@ def send_orders_as_excel(sender_id, orders, region_name):
                 "type": "document",
                 "document": {
                     "id": media_id,
-                    "caption": f"📊 طلبات {region_name}\nإجمالي الطلبات: {len(orders)}",
+                    "caption": f"📊 طلبات {region_name}\n📦 إجمالي الطلبات: {len(orders)}",
                     "filename": f"{region_name}_{len(orders)}_طلب.xlsx"
                 }
             }
             requests.post(url, headers=headers, json=data)
-            send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}")
+            send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}\nعدد الطلبات: {len(orders)}")
         else:
             send_whatsapp_message(sender_id, f"❌ فشل في إرسال ملف {region_name}")
         
         os.remove(output_path)
         
+    except ImportError:
+        send_whatsapp_message(sender_id, "❌ المكتبات المطلوبة غير موجودة (pandas, openpyxl)")
     except Exception as e:
         send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
 
@@ -182,20 +199,20 @@ def handle_document_async(sender_id, doc):
                 options += f"📍 الرياض: {len(riyadh_orders)} طلب\n"
                 options += f"🏠 باقي المناطق: {len(other_orders)} طلب\n\n"
                 options += "*اختر طريقة الاستلام:*\n\n"
-                options += "1️⃣ أرسل 'رياض رسائل'\n"
-                options += "2️⃣ أرسل 'رياض اكسل'\n"
-                options += "3️⃣ أرسل 'باقي رسائل'\n"
-                options += "4️⃣ أرسل 'باقي اكسل'\n"
-                options += "5️⃣ أرسل 'الكل اكسل'"
+                options += "1️⃣ أرسل 'رياض رسائل' - لاستلام طلبات الرياض كرسائل منفصلة\n"
+                options += "2️⃣ أرسل 'رياض اكسل' - لاستلام طلبات الرياض كملف Excel\n"
+                options += "3️⃣ أرسل 'باقي رسائل' - لاستلام طلبات باقي المناطق كرسائل منفصلة\n"
+                options += "4️⃣ أرسل 'باقي اكسل' - لاستلام طلبات باقي المناطق كملف Excel\n"
+                options += "5️⃣ أرسل 'الكل اكسل' - لاستلام جميع الطلبات في ملف Excel واحد"
                 
                 send_whatsapp_message(sender_id, options)
                 
             else:
-                send_whatsapp_message(sender_id, "❌ لم يتم العثور على بيانات")
+                send_whatsapp_message(sender_id, "❌ لم يتم العثور على بيانات في ملف الإكسل")
                 
         except Exception as e:
             print(f"Excel error: {str(e)}")
-            send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
+            send_whatsapp_message(sender_id, f"❌ حدث خطأ: {str(e)[:100]}")
         finally:
             if os.path.exists(path):
                 os.remove(path)
@@ -289,9 +306,9 @@ def webhook():
                     all_orders = riyadh_orders + other_orders
                     send_orders_as_excel(sender_id, all_orders, "جميع الطلبات")
                 else:
-                    send_whatsapp_message(sender_id, "❌ خيار غير صحيح")
+                    send_whatsapp_message(sender_id, "❌ خيار غير صحيح. أرسل: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، أو الكل اكسل")
             else:
-                send_whatsapp_message(sender_id, "أهلاً! أرسل ملف Excel")
+                send_whatsapp_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
             
     except Exception as e:
         print(f"Webhook error: {str(e)}")
