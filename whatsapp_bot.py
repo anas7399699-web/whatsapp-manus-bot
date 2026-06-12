@@ -124,18 +124,24 @@ def handle_document_async(sender_id, doc):
         handle_pdf_logic(sender_id, media_content)
 
 
-# ==================== دالة معالجة سلة المحدثة لتقرأ المنتجات والمقاسات ====================
+# ==================== دالة معالجة سلة (بدون تعديل منطقي) ====================
 
 def process_salla_webhook_async(raw_data):
     with salla_lock:
         try:
-            # استخراج رقم الطلب الذكي
-            order_id = str(
-                raw_data.get('id') 
-                or raw_data.get('order_id') 
-                or raw_data.get('reference_id') 
+            if 'shipment' in raw_data and isinstance(raw_data['shipment'], dict):
+                shipment = raw_data['shipment']
+            else:
+                shipment = raw_data
+
+            order_id = (
+                shipment.get('order_id')
+                or shipment.get('reference_id')
+                or raw_data.get('order_id')
+                or raw_data.get('id')
                 or 'غير متوفر'
             )
+            order_id = str(order_id)
 
             if order_id in processed_salla_orders:
                 print(f"[Salla] تم تجاهل طلب مكرر: {order_id}")
@@ -144,26 +150,39 @@ def process_salla_webhook_async(raw_data):
             if len(processed_salla_orders) > 1000:
                 processed_salla_orders.clear()
 
-            # بيانات العميل
-            customer_obj = raw_data.get('customer') or {}
+            customer_obj = shipment.get('customer') or raw_data.get('customer') or {}
+
             recipient_name = (
                 customer_obj.get('name')
-                or f"{customer_obj.get('first_name', '')} {customer_obj.get('last_name', '')}".strip()
+                or customer_obj.get('first_name', '') + ' ' + customer_obj.get('last_name', '')
+                or shipment.get('customer_name')
+                or raw_data.get('customer_name')
                 or 'غير متوفر'
             ).strip()
 
-            recipient_mobile = customer_obj.get('mobile') or customer_obj.get('phone') or ''
+            recipient_mobile = (
+                customer_obj.get('mobile')
+                or customer_obj.get('phone')
+                or shipment.get('customer_phone')
+                or raw_data.get('customer_phone')
+                or ''
+            )
 
-            # بيانات العنوان
-            address_obj = raw_data.get('shipping_address') or raw_data.get('address') or {}
-            city     = address_obj.get('city', '')     or raw_data.get('city', '')
-            district = address_obj.get('district', '') or raw_data.get('district', '')
-            street   = address_obj.get('street', '')   or raw_data.get('street', '')
+            address_obj = (
+                shipment.get('shipping_address')
+                or shipment.get('address')
+                or raw_data.get('shipping_address')
+                or raw_data.get('address')
+                or {}
+            )
+
+            city     = address_obj.get('city', '')     or shipment.get('city', '')     or raw_data.get('city', '')
+            district = address_obj.get('district', '') or shipment.get('district', '') or raw_data.get('district', '')
+            street   = address_obj.get('street', '')   or shipment.get('street', '')   or raw_data.get('street', '')
 
             address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
             full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
 
-            # تنسيق رقم الجوال دولياً
             mobile_str = str(recipient_mobile).strip().replace(' ', '').replace('-', '')
             if mobile_str.startswith('+'):
                 mobile_str = mobile_str[1:]
@@ -172,46 +191,19 @@ def process_salla_webhook_async(raw_data):
             elif mobile_str.startswith('5') and len(mobile_str) == 9:
                 mobile_str = '966' + mobile_str
 
-            # 👗 استخراج المنتجات والمقاسات والألوان بالتفصيل 👗
-            items_summary = []
-            items = raw_data.get('items', [])
-            if items:
-                for item in items:
-                    product_name = item.get('name', 'منتج غير معروف')
-                    quantity = item.get('quantity', 1)
-                    
-                    # جلب الخيارات (مثل المقاس واللون المربوط بالمنتج)
-                    options_str = ""
-                    options = item.get('options', [])
-                    if options:
-                        opt_parts = []
-                        for opt in options:
-                            opt_name = opt.get('name', '') # مقاس أو لون
-                            opt_value = opt.get('value', '') # M أو أسود
-                            if opt_name and opt_value:
-                                opt_parts.append(f"{opt_name}: {opt_value}")
-                        if opt_parts:
-                            options_str = f" - [{', '.join(opt_parts)}]"
-                    
-                    items_summary.append(f"{product_name} (الكمية: {quantity}){options_str}")
-            
-            products_text = '\n- '.join(items_summary) if items_summary else 'لا يوجد تفاصيل منتجات'
-
-            # صياغة الرسالة النهائية الاحترافية لمتجر أليزا
             final_msg = (
-                f"**العنوان /** {full_address}\n"
-                f"**رقم الطلبية /** {order_id}\n"
-                f"**رقم المستلم /** +{mobile_str}\n"
-                f"**اسم المستلم /** {recipient_name}\n"
-                f"**المنتجات /**\n- {products_text}"
+                f"العنوان / {full_address}\n"
+                f"رقم الطلبية / {order_id}\n"
+                f"رقم المستلم / +{mobile_str}\n"
+                f"اسم المستلم / {recipient_name}"
             )
 
-            print(f"[Salla] إرسال طلب {order_id} ← {MY_WHATSAPP_NUMBER}")
+            print(f"[Salla] إرسال طلب {order_id} → {MY_WHATSAPP_NUMBER}")
             send_whatsapp_message(MY_WHATSAPP_NUMBER, final_msg)
             time.sleep(2)
 
         except Exception as e:
-            print(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
+            print(f"[Salla] خطأ في المعالجة: {str(e)}")
 
 
 # ==================== Keep-Alive لمنع نوم Render ====================
@@ -269,10 +261,11 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 
-# ==================== مسار سلة Webhook المعدل والمصلح بالكامل ====================
+# ==================== مسار سلة Webhook (تم تعديله للربط) ====================
 
 @app.route('/salla-webhook', methods=['GET', 'POST', 'HEAD'])
 def salla_webhook():
+    # تعديل الربط: الاستجابة لطلبات التحقق
     if request.method in ['GET', 'HEAD']:
         print(f"[Salla] Verification request received via {request.method}")
         return "Webhook is active", 200
@@ -285,34 +278,18 @@ def salla_webhook():
         try:
             event = data.get('event', '')
             raw_data = data.get('data', {})
-            
-            print(f"📢 وصل إشعار جديد من سلة! الحدث: {event}")
 
-            # السماح بمعالجة أحداث الطلبات الحية (الإنشاء والتحديث) بجانب الشحنات
-            if any(x in str(event).lower() for x in ['order.created', 'order.updated', 'shipment', 'carrier']):
+            # معالجة الأحداث المتعلقة بالشحنات
+            if 'carrier' in str(event).lower() or 'shipment' in str(event).lower():
                 threading.Thread(
                     target=process_salla_webhook_async,
                     args=(raw_data,)
                 ).start()
-            else:
-                print(f"⚠️ تم تجاهل الحدث لأنه غير مدرج: {event}")
 
         except Exception as e:
             print(f"[Salla] Route error: {str(e)}")
 
         return jsonify({"status": "received"}), 200
-
-
-# ==================== مسار تشخيصي لاختبار إرساليات سلة ====================
-
-@app.route('/debug-salla', methods=['POST', 'GET'])
-def debug_salla():
-    if request.method == 'POST':
-        data = request.get_json(force=True, silent=True)
-        print(f"🔍 DEBUG - Received raw data: {data}")
-        print(f"🔍 DEBUG - Headers: {dict(request.headers)}")
-        return jsonify({"status": "debug_received"}), 200
-    return "Debug endpoint active - Send POST requests here to test", 200
 
 
 # ==================== تشغيل التطبيق ====================
