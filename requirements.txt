@@ -7,3 +7,5 @@ xlrd
 pymupdf
 pillow
 google-generativeai
+pandas
+openpyxl
