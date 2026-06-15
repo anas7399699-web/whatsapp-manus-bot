@@ -4,28 +4,33 @@ import time
 import threading
 import tempfile
 import re
-import fitz
+import fitz  # PyMuPDF لقراءة PDF
 from PIL import Image
 from flask import Flask, request, jsonify
 from process_orders import process_excel_orders_to_list
-import pandas as pd
+import pandas as pd  # لإنشاء ملفات Excel
 
 app = Flask(__name__)
 
-# الإعدادات من بيئة Render
+# ==================== إعدادات Render ====================
 ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 
-# ذاكرة مؤقتة
-processed_messages = set()
-processed_salla_orders = set()
-user_temp_data = {}
+# ==================== الذواكر المؤقتة ====================
+processed_messages = set()        # لمنع تكرار معالجة نفس الرسالة
+processed_salla_orders = set()    # لمنع تكرار معالجة نفس الطلب من سلة
+user_temp_data = {}               # لتخزين بيانات الطلبات مؤقتاً لكل مستخدم
+
+# ==================== إعدادات إضافية ====================
 salla_lock = threading.Lock()
 MY_WHATSAPP_NUMBER = "967739969981"
 
 
+# ==================== دوال واتساب الأساسية ====================
+
 def send_whatsapp_message(to, text):
+    """إرسال رسالة نصية عبر واتساب"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
@@ -33,6 +38,7 @@ def send_whatsapp_message(to, text):
 
 
 def upload_whatsapp_media(file_path, mime_type):
+    """رفع ملف (صورة أو مستند) إلى واتساب"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/media"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
     files = {'file': (os.path.basename(file_path), open(file_path, 'rb'), mime_type)}
@@ -45,13 +51,22 @@ def upload_whatsapp_media(file_path, mime_type):
 
 
 def send_whatsapp_image_with_caption(to, media_id, caption):
+    """إرسال صورة مع تعليق عبر واتساب"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
-    data = {"messaging_product": "whatsapp", "to": to, "type": "image", "image": {"id": media_id, "caption": caption}}
+    data = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "image",
+        "image": {"id": media_id, "caption": caption}
+    }
     requests.post(url, headers=headers, json=data)
 
 
+# ==================== معالجة ملفات PDF ====================
+
 def handle_pdf_logic(sender_id, media_content):
+    """استخراج بوالص الشحن من ملف PDF وتحويلها إلى صور"""
     try:
         doc = fitz.open(stream=media_content, filetype="pdf")
         send_whatsapp_message(sender_id, f"📄 جاري استخراج {len(doc)} بوالص شحن... ⏳")
@@ -76,8 +91,10 @@ def handle_pdf_logic(sender_id, media_content):
         send_whatsapp_message(sender_id, "❌ حدث خطأ في معالجة ملف البوالص.")
 
 
+# ==================== معالجة Excel (الرسائل المنفصلة) ====================
+
 def send_orders_as_messages(sender_id, orders, region_name):
-    """إرسال الطلبات كرسائل منفصلة (نفس النظام القديم)"""
+    """إرسال الطلبات كرسائل منفصلة"""
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
@@ -95,8 +112,10 @@ def send_orders_as_messages(sender_id, orders, region_name):
     send_whatsapp_message(sender_id, f"✅ تم إرسال {len(orders)} طلب لـ {region_name}")
 
 
+# ==================== معالجة Excel (ملف Excel مع عمود المدينة) ====================
+
 def send_orders_as_excel(sender_id, orders, region_name):
-    """إرسال الطلبات كملف Excel واحد - كل سطر في خانة منفصلة"""
+    """إرسال الطلبات كملف Excel واحد مع استخراج المدينة من العنوان"""
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
@@ -106,6 +125,7 @@ def send_orders_as_excel(sender_id, orders, region_name):
         for order_msg in orders:
             order_dict = {
                 'العنوان': '',
+                'المدينة': '',
                 'رقم الطلبية': '',
                 'رقم المستلم': '',
                 'اسم المستلم': ''
@@ -114,7 +134,29 @@ def send_orders_as_excel(sender_id, orders, region_name):
             lines = order_msg.split('\n')
             for line in lines:
                 if 'العنوان /' in line:
-                    order_dict['العنوان'] = line.split('العنوان /')[1].strip()
+                    full_address = line.split('العنوان /')[1].strip()
+                    
+                    # استخراج المدينة من العنوان
+                    if ' - ' in full_address:
+                        parts = full_address.split(' - ', 1)
+                        city = parts[0].strip()
+                        clean_address = parts[1].strip() if len(parts) > 1 else full_address
+                    elif '،' in full_address:
+                        parts = full_address.split('،', 1)
+                        city = parts[0].strip()
+                        clean_address = parts[1].strip() if len(parts) > 1 else full_address
+                    else:
+                        words = full_address.split()
+                        if words:
+                            city = words[0]
+                            clean_address = ' '.join(words[1:]) if len(words) > 1 else full_address
+                        else:
+                            city = ''
+                            clean_address = full_address
+                    
+                    order_dict['العنوان'] = clean_address
+                    order_dict['المدينة'] = city
+                    
                 elif 'رقم الطلبية /' in line:
                     order_dict['رقم الطلبية'] = line.split('رقم الطلبية /')[1].strip()
                 elif 'رقم الطلبية/' in line:
@@ -129,7 +171,7 @@ def send_orders_as_excel(sender_id, orders, region_name):
             orders_data.append(order_dict)
         
         df = pd.DataFrame(orders_data)
-        df = df[['العنوان', 'رقم الطلبية', 'رقم المستلم', 'اسم المستلم']]
+        df = df[['العنوان', 'المدينة', 'رقم الطلبية', 'رقم المستلم', 'اسم المستلم']]
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             output_path = tmp.name
@@ -163,7 +205,10 @@ def send_orders_as_excel(sender_id, orders, region_name):
         send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
 
 
+# ==================== معالجة ملف Excel الرئيسية ====================
+
 def handle_document_async(sender_id, doc):
+    """معالجة الملفات المرسلة عبر واتساب (Excel أو PDF)"""
     mime_type = doc.get('mime_type', '')
     filename = doc.get('filename', '').lower()
     media_id = doc.get('id')
@@ -176,6 +221,7 @@ def handle_document_async(sender_id, doc):
     
     media_content = requests.get(media_url, headers=headers).content
 
+    # معالجة ملفات Excel
     if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
         send_whatsapp_message(sender_id, "📥 جاري تحليل ملف الإكسل... ⏳")
         
@@ -217,47 +263,121 @@ def handle_document_async(sender_id, doc):
             if os.path.exists(path):
                 os.remove(path)
 
+    # معالجة ملفات PDF
     elif 'pdf' in mime_type or filename.endswith('.pdf'):
         handle_pdf_logic(sender_id, media_content)
 
 
-def process_salla_webhook_async(shipment_data):
+# ==================== دالة معالجة إشعارات سلة (لحالتي جاري التوصيل + تم التنفيذ فقط) ====================
+
+def process_salla_webhook_async(raw_data):
+    """معالجة البيانات القادمة من سلة عند تحديث الطلب - فقط للحالات المسموحة"""
     with salla_lock:
         try:
-            order_id = shipment_data.get('order_id', 'غير متوفر')
+            # استخراج رقم الطلب
+            order_id = str(
+                raw_data.get('id') 
+                or raw_data.get('order_id') 
+                or raw_data.get('reference_id') 
+                or 'غير متوفر'
+            )
+
+            # استخراج الحالة الجديدة
+            order_status = raw_data.get('status', '')
+            
+            # ✅ قائمة الحالات المسموح بها فقط (جاري التوصيل + تم التنفيذ)
+            allowed_statuses = [
+                'جاري التوصيل',
+                'تم التنفيذ',
+                'shipped',      # بالإنجليزية
+                'completed',    # بالإنجليزية
+                'delivered'     # بالإنجليزية
+            ]
+            
+            # التحقق: إذا كانت الحالة الجديدة غير مسموحة، لا ترسل شيئاً
+            if order_status not in allowed_statuses:
+                print(f"[Salla] ⏭️ تم تجاهل تحديث الطلب {order_id} - الحالة: {order_status} (غير مسموحة)")
+                return
+            
+            # منع تكرار معالجة نفس الطلب
             if order_id in processed_salla_orders:
+                print(f"[Salla] تم تجاهل طلب مكرر: {order_id}")
                 return
             processed_salla_orders.add(order_id)
             if len(processed_salla_orders) > 1000:
                 processed_salla_orders.clear()
 
-            city = shipment_data.get('city', '')
-            full_address = city if city else "غير محدد"
-            recipient_name = shipment_data.get('customer_name', '')
-            recipient_mobile = shipment_data.get('customer_phone', '')
+            # بيانات العميل
+            customer_obj = raw_data.get('customer') or {}
+            recipient_name = (
+                customer_obj.get('name')
+                or f"{customer_obj.get('first_name', '')} {customer_obj.get('last_name', '')}".strip()
+                or 'غير متوفر'
+            ).strip()
 
-            mobile_str = str(recipient_mobile).strip()
-            if mobile_str.startswith('5') and len(mobile_str) == 9:
-                mobile_str = '966' + mobile_str
+            recipient_mobile = customer_obj.get('mobile') or customer_obj.get('phone') or ''
+
+            # استخراج العنوان
+            address_obj = raw_data.get('shipping_address') or raw_data.get('address') or {}
+            city = address_obj.get('city', '') or raw_data.get('city', '')
+            district = address_obj.get('district', '') or raw_data.get('district', '')
+            street = address_obj.get('street', '') or raw_data.get('street', '')
+
+            address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
+            full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
+
+            # تنسيق رقم الجوال
+            mobile_str = str(recipient_mobile).strip().replace(' ', '').replace('-', '')
+            if mobile_str.startswith('+'):
+                mobile_str = mobile_str[1:]
             elif mobile_str.startswith('05') and len(mobile_str) == 10:
                 mobile_str = '966' + mobile_str[1:]
-            elif mobile_str.startswith('+'):
-                mobile_str = mobile_str.replace('+', '')
+            elif mobile_str.startswith('5') and len(mobile_str) == 9:
+                mobile_str = '966' + mobile_str
 
-            final_msg = f"العنوان / {full_address}\nرقم الطلبية/ {order_id}\nرقم المستلم / +{mobile_str}\nاسم المستلم/ {recipient_name.strip()}"
+            print(f"[Salla] ✅ سيتم إرسال إشعار للطلب {order_id} - الحالة: {order_status}")
+
+            # الرسالة النهائية
+            final_msg = (
+                f"**العنوان /** {full_address}\n"
+                f"**رقم الطلبية /** {order_id}\n"
+                f"**رقم المستلم /** +{mobile_str}\n"
+                f"**اسم المستلم /** {recipient_name}"
+            )
+
             send_whatsapp_message(MY_WHATSAPP_NUMBER, final_msg)
             time.sleep(2)
-        except Exception as e:
-            print(f"Salla Error: {str(e)}")
 
+        except Exception as e:
+            print(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
+
+
+# ==================== دالة منع نوم Render ====================
+
+def keep_alive():
+    """منع خدمة Render من الدخول في وضع السبات"""
+    RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
+    if not RENDER_URL:
+        return
+    while True:
+        try:
+            time.sleep(600)  # كل 10 دقائق
+            requests.get(f"{RENDER_URL}/", timeout=10)
+        except:
+            pass
+
+
+# ==================== المسارات (Routes) ====================
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
+    """فحص أساسي للتأكد من أن البوت يعمل"""
     return "Bot is running", 200
 
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
+    """مسار استقبال رسائل واتساب"""
     if request.method == 'GET':
         if request.args.get('hub.verify_token') == VERIFY_TOKEN:
             return request.args.get('hub.challenge'), 200
@@ -318,24 +438,50 @@ def webhook():
 
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
+    """مسار استقبال إشعارات سلة - فقط لتحديثات الطلبات"""
     if request.method == 'GET':
+        print("Salla webhook verification test received via GET.")
         return "Webhook is active", 200
 
     if request.method == 'POST':
-        data = request.json
+        data = request.get_json(force=True, silent=True)
         if not data:
             return jsonify({"status": "no_data"}), 400
 
         try:
-            event = data.get('event')
-            shipment_data = data.get('data', {})
-            if 'shipment' in str(event):
-                threading.Thread(target=process_salla_webhook_async, args=(shipment_data,)).start()
+            event = data.get('event', '')
+            raw_data = data.get('data', {})
+            
+            print(f"📢 وصل إشعار جديد من سلة! الحدث: {event}")
+
+            # معالجة فقط أحداث تحديث الطلب
+            if event in ['order.updated', 'order.status.updated']:
+                threading.Thread(
+                    target=process_salla_webhook_async,
+                    args=(raw_data,)
+                ).start()
+            else:
+                print(f"⚠️ تم تجاهل الحدث (ليس تحديث طلب): {event}")
+
         except Exception as e:
-            print(f"Salla Error: {str(e)}")
+            print(f"Salla Webhook Route Error: {str(e)}")
             
         return jsonify({"status": "received"}), 200
 
 
+@app.route('/debug-salla', methods=['POST', 'GET'])
+def debug_salla():
+    """مسار تشخيصي لاختبار إرساليات سلة"""
+    if request.method == 'POST':
+        data = request.get_json(force=True, silent=True)
+        print(f"🔍 DEBUG - Received raw data: {data}")
+        print(f"🔍 DEBUG - Headers: {dict(request.headers)}")
+        return jsonify({"status": "debug_received"}), 200
+    return "Debug endpoint active - Send POST requests here to test", 200
+
+
+# ==================== تشغيل التطبيق ====================
+
 if __name__ == '__main__':
+    threading.Thread(target=keep_alive, daemon=True).start()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
