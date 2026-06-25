@@ -21,6 +21,7 @@ VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 processed_messages = set()        # لمنع تكرار معالجة نفس الرسالة
 processed_salla_orders = set()    # لمنع تكرار معالجة نفس الطلب من سلة
 user_temp_data = {}               # لتخزين بيانات الطلبات مؤقتاً لكل مستخدم
+user_temp_expiry = {}             # 🔹 جديد: لتخزين وقت انتهاء صلاحية البيانات لكل مستخدم
 
 # ==================== إعدادات إضافية ====================
 salla_lock = threading.Lock()
@@ -236,10 +237,12 @@ def handle_document_async(sender_id, doc):
                 riyadh_orders = result.get("riyadh", [])
                 other_orders = result.get("others", [])
                 
+                # 🔹 تخزين النتائج مع صلاحية 30 دقيقة
                 user_temp_data[sender_id] = {
                     "riyadh": riyadh_orders,
                     "others": other_orders
                 }
+                user_temp_expiry[sender_id] = time.time() + 1800  # 30 دقيقة
                 
                 options = f"📊 *نتائج التحليل:*\n"
                 options += f"📍 الرياض: {len(riyadh_orders)} طلب\n"
@@ -249,7 +252,8 @@ def handle_document_async(sender_id, doc):
                 options += "2️⃣ أرسل 'رياض اكسل' - لاستلام طلبات الرياض كملف Excel\n"
                 options += "3️⃣ أرسل 'باقي رسائل' - لاستلام طلبات باقي المناطق كرسائل منفصلة\n"
                 options += "4️⃣ أرسل 'باقي اكسل' - لاستلام طلبات باقي المناطق كملف Excel\n"
-                options += "5️⃣ أرسل 'الكل اكسل' - لاستلام جميع الطلبات في ملف Excel واحد"
+                options += "5️⃣ أرسل 'الكل اكسل' - لاستلام جميع الطلبات في ملف Excel واحد\n"
+                options += "6️⃣ أرسل 'مسح' - لحذف البيانات المؤقتة"
                 
                 send_whatsapp_message(sender_id, options)
                 
@@ -408,25 +412,44 @@ def webhook():
         elif msg.get('type') == 'text':
             text_body = msg.get('text', {}).get('body', '').lower()
             
+            # 🔹 التحقق من وجود بيانات للمستخدم ولم تنته صلاحيتها
             if sender_id in user_temp_data:
-                data_store = user_temp_data[sender_id]
-                riyadh_orders = data_store["riyadh"]
-                other_orders = data_store["others"]
-                del user_temp_data[sender_id]
-                
-                if "رياض رسائل" in text_body:
-                    send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
-                elif "رياض اكسل" in text_body or "رياض excel" in text_body:
-                    send_orders_as_excel(sender_id, riyadh_orders, "الرياض")
-                elif "باقي رسائل" in text_body:
-                    send_orders_as_messages(sender_id, other_orders, "باقي المناطق")
-                elif "باقي اكسل" in text_body or "باقي excel" in text_body:
-                    send_orders_as_excel(sender_id, other_orders, "باقي المناطق")
-                elif "الكل اكسل" in text_body or "الكل excel" in text_body:
-                    all_orders = riyadh_orders + other_orders
-                    send_orders_as_excel(sender_id, all_orders, "جميع الطلبات")
+                # التحقق من صلاحية البيانات
+                if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
+                    # انتهت الصلاحية - حذف البيانات
+                    del user_temp_data[sender_id]
+                    del user_temp_expiry[sender_id]
+                    send_whatsapp_message(sender_id, "⏰ انتهت صلاحية بيانات الطلبات. أرسل ملف Excel مرة أخرى.")
                 else:
-                    send_whatsapp_message(sender_id, "❌ خيار غير صحيح. أرسل: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، أو الكل اكسل")
+                    data_store = user_temp_data[sender_id]
+                    riyadh_orders = data_store["riyadh"]
+                    other_orders = data_store["others"]
+                    
+                    # 🔹 لا نحذف البيانات بعد التنفيذ (تم إزالة del user_temp_data[sender_id])
+                    
+                    # 🔹 تجديد وقت الصلاحية (30 دقيقة إضافية)
+                    user_temp_expiry[sender_id] = time.time() + 1800
+                    
+                    if "رياض رسائل" in text_body:
+                        send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
+                    elif "رياض اكسل" in text_body or "رياض excel" in text_body:
+                        send_orders_as_excel(sender_id, riyadh_orders, "الرياض")
+                    elif "باقي رسائل" in text_body:
+                        send_orders_as_messages(sender_id, other_orders, "باقي المناطق")
+                    elif "باقي اكسل" in text_body or "باقي excel" in text_body:
+                        send_orders_as_excel(sender_id, other_orders, "باقي المناطق")
+                    elif "الكل اكسل" in text_body or "الكل excel" in text_body:
+                        all_orders = riyadh_orders + other_orders
+                        send_orders_as_excel(sender_id, all_orders, "جميع الطلبات")
+                    elif "مسح" in text_body or "انهاء" in text_body or "حذف" in text_body:
+                        # حذف البيانات يدوياً
+                        if sender_id in user_temp_data:
+                            del user_temp_data[sender_id]
+                        if sender_id in user_temp_expiry:
+                            del user_temp_expiry[sender_id]
+                        send_whatsapp_message(sender_id, "✅ تم مسح بيانات الطلبات المؤقتة.")
+                    else:
+                        send_whatsapp_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
             else:
                 send_whatsapp_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
             
@@ -448,7 +471,7 @@ def salla_webhook():
         if not data:
             return jsonify({"status": "no_data"}), 400
 
-        try:
+                try:
             event = data.get('event', '')
             raw_data = data.get('data', {})
             
