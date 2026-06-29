@@ -471,7 +471,7 @@ def salla_webhook():
         if not data:
             return jsonify({"status": "no_data"}), 400
 
-                try:
+            try:
             event = data.get('event', '')
             raw_data = data.get('data', {})
             
