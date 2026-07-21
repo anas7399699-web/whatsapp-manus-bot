@@ -11,7 +11,10 @@ from process_orders import process_excel_orders_to_list
 import pandas as pd  # لإنشاء ملفات Excel
 
 app = Flask(__name__)
-
+@app.route('/test-new', methods=['GET'])
+def test_new():
+    return "New Code is Running!", 200
+    
 # ==================== إعدادات Render ====================
 ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
