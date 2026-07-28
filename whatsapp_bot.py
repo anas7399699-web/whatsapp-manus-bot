@@ -1,3 +1,4 @@
+# التحديث الأخير للتأكد من المزامنة: 2026-07-28
 import os
 import requests
 import time
