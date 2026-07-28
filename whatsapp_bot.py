@@ -1,4 +1,4 @@
-# التحديث الأخير للتأكد من المزامنة: 2026-07-28
+# التحديث الأخير: 2026-07-28 - إضافة كود تشخيصي لمسار salla-webhook
 import os
 import requests
 import time
@@ -22,7 +22,7 @@ VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 processed_messages = set()        # لمنع تكرار معالجة نفس الرسالة
 processed_salla_orders = set()    # لمنع تكرار معالجة نفس الطلب من سلة
 user_temp_data = {}               # لتخزين بيانات الطلبات مؤقتاً لكل مستخدم
-user_temp_expiry = {}             # 🔹 جديد: لتخزين وقت انتهاء صلاحية البيانات لكل مستخدم
+user_temp_expiry = {}             # لتخزين وقت انتهاء صلاحية البيانات لكل مستخدم
 
 # ==================== إعدادات إضافية ====================
 salla_lock = threading.Lock()
@@ -238,7 +238,7 @@ def handle_document_async(sender_id, doc):
                 riyadh_orders = result.get("riyadh", [])
                 other_orders = result.get("others", [])
                 
-                # 🔹 تخزين النتائج مع صلاحية 30 دقيقة
+                # تخزين النتائج مع صلاحية 30 دقيقة
                 user_temp_data[sender_id] = {
                     "riyadh": riyadh_orders,
                     "others": other_orders
@@ -412,7 +412,7 @@ def webhook():
         elif msg.get('type') == 'text':
             text_body = msg.get('text', {}).get('body', '').lower()
             
-            # 🔹 التحقق من وجود بيانات للمستخدم ولم تنته صلاحيتها
+            # التحقق من وجود بيانات للمستخدم ولم تنته صلاحيتها
             if sender_id in user_temp_data:
                 # التحقق من صلاحية البيانات
                 if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
@@ -425,9 +425,9 @@ def webhook():
                     riyadh_orders = data_store["riyadh"]
                     other_orders = data_store["others"]
                     
-                    # 🔹 لا نحذف البيانات بعد التنفيذ (تم إزالة del user_temp_data[sender_id])
+                    # لا نحذف البيانات بعد التنفيذ
                     
-                    # 🔹 تجديد وقت الصلاحية (30 دقيقة إضافية)
+                    # تجديد وقت الصلاحية (30 دقيقة إضافية)
                     user_temp_expiry[sender_id] = time.time() + 1800
                     
                     if "رياض رسائل" in text_body:
@@ -459,9 +459,20 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 
+# ==================== مسار سلة مع كود تشخيصي ====================
+
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
-    """مسار استقبال إشعارات سلة - فقط لتحديثات الطلبات"""
+    """مسار استقبال إشعارات سلة - مع كود تشخيصي"""
+    # ===== كود تشخيصي =====
+    print("="*50)
+    print("🚨 تم الوصول إلى مسار /salla-webhook")
+    print(f"🚨 Method: {request.method}")
+    print(f"🚨 Headers: {dict(request.headers)}")
+    print(f"🚨 Body: {request.get_data(as_text=True)}")
+    print("="*50)
+    # ===== نهاية الكود التشخيصي =====
+    
     if request.method == 'GET':
         print("Salla webhook verification test received via GET.")
         return "Webhook is active", 200
