@@ -92,9 +92,26 @@ def extract_product_image_from_page(page, product_name):
 
 
 def extract_orders_from_invoice_pdf(media_content):
-    """استخراج الطلبات من فواتير PDF"""
+    """استخراج الطلبات من فواتير PDF مع كود تشخيصي"""
     try:
         doc = fitz.open(stream=media_content, filetype="pdf")
+        
+        # ===== كود تشخيصي: طباعة محتوى الصفحات =====
+        print("="*60)
+        print("📄 بدء تحليل الفاتورة (تشخيص)")
+        print(f"عدد الصفحات: {len(doc)}")
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            page_text = page.get_text()
+            print(f"\n--- الصفحة {page_num + 1} ---")
+            # طباعة أول 1000 حرف
+            print(page_text[:1000])
+            if len(page_text) > 1000:
+                print("...(تم اقتطاع النص)")
+        print("="*60)
+        # ===== نهاية الكود التشخيصي =====
+        
         all_orders = []
         current_order = None
         current_page_text = ""
@@ -183,6 +200,14 @@ def extract_orders_from_invoice_pdf(media_content):
             all_orders.append(current_order)
         
         doc.close()
+        
+        # ===== كود تشخيصي: عدد الطلبات المستخرجة =====
+        print(f"✅ تم استخراج {len(all_orders)} طلب(ات)")
+        for i, order in enumerate(all_orders):
+            print(f"  الطلب {i+1}: رقم {order['order_number']} - {order['product_name']}")
+        print("="*60)
+        # ===== نهاية الكود التشخيصي =====
+        
         return all_orders
         
     except Exception as e:
