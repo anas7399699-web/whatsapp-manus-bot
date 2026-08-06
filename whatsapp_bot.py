@@ -2,6 +2,9 @@ import os
 import fitz  # PyMuPDF لتحليل ملفات الـ PDF واستخراج الصور والنصوص
 import requests
 import time
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
 
 # --- إعدادات واتساب والبوت ---
 WHATSAPP_TOKEN = "YOUR_WHATSAPP_TOKEN"
@@ -116,11 +119,11 @@ def process_invoice_pdf(pdf_path):
             # إرسال الطلب مستقلًا مع صورته (إن وجدت)
             if saved_image_path and os.path.exists(saved_image_path):
                 send_whatsapp_image(MY_WHATSAPP_NUMBER, saved_image_path, caption)
-                os.remove(saved_image_path) # تنظيف الملف المؤقت للصورة
+                os.remove(saved_image_path)
             else:
                 send_whatsapp_message(MY_WHATSAPP_NUMBER, caption)
             
-            time.sleep(1) # فاصل زمني بسيط لتجنب حظر رسائل الواتساب السريعة
+            time.sleep(1)
             
         doc.close()
         print("[Success] تمت معالجة وإرسال كافة طلبات الفاتورة بنجاح.")
@@ -128,8 +131,30 @@ def process_invoice_pdf(pdf_path):
     except Exception as e:
         print(f"[Parser Error] حدث خطأ أثناء تحليل ملف الـ PDF: {e}")
 
-if __name__ == '__main__':
-    # اختبار تشغيل النظام المستقل محلياً عبر تمرير مسار ملف الـ PDF مباشرة
-    sample_pdf = "sample_invoice.pdf"
-    process_invoice_pdf(sample_pdf)
+@app.route('/pdf-webhook', methods=['POST'])
+def webhook():
+    """مسار الـ Webhook لاستقبال ملفات أو روابط الفواتير"""
+    data = request.json
+    if data and 'pdf_url' in data:
+        pdf_url = data['pdf_url']
+        try:
+            res = requests.get(pdf_url)
+            pdf_path = "temp_downloaded_invoice.pdf"
+            with open(pdf_path, 'wb') as f:
+                f.write(res.content)
+            
+            process_invoice_pdf(pdf_path)
+            
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
                 
+            return jsonify({"status": "success", "message": "تم معالجة الفاتورة وإرسال الطلبات"}), 200
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+            
+    return jsonify({"status": "waiting_for_pdf"}), 200
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
+    
