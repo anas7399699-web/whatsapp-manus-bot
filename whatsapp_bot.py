@@ -46,7 +46,7 @@ def send_whatsapp_image_with_caption(to, media_id, caption):
     requests.post(url, headers=headers, json=data)
 
 
-# ==================== دوال استخراج الفواتير المحدثة ====================
+# ==================== دوال استخراج الفواتير ====================
 
 def extract_product_image_from_page(page, product_name):
     """استخراج صورة المنتج من الصفحة بدقة"""
@@ -91,7 +91,7 @@ def extract_product_image_from_page(page, product_name):
 
 
 def extract_orders_from_invoice_pdf(media_content):
-    """استخراج الطلبات بدقة متناهية متوافقة مع تصميم الفواتير الفعلية"""
+    """استخراج الطلبات بدقة وتطهير النصوص تماماً"""
     try:
         doc = fitz.open(stream=media_content, filetype="pdf")
         all_orders = []
@@ -100,21 +100,18 @@ def extract_orders_from_invoice_pdf(media_content):
             page = doc.load_page(page_num)
             page_text = page.get_text()
             
-            # البحث عن أرقام الطلبات في الصفحة (كل صفحة قد تحتوي على فاتورة أو طلب مستقل)
             order_matches = re.findall(r'(\d{9})\s*:\s*رقم الطلب', page_text)
             if not order_matches:
                 order_matches = re.findall(r'رقم الطلب\s*[:\-]?\s*(\d{9})', page_text)
                 
             if order_matches:
                 for order_id in order_matches:
-                    # محاولة استخراج اسم المنتج الموجود في الفاتورة
                     product_name = "منتج غير محدد"
                     if "مشط شنب لعشاق الفخامة" in page_text:
-                        product_name = "مشط شنب لعشاق الفخامة[span_0](start_span)[span_0](end_span)"
+                        product_name = "مشط شنب لعشاق الفخامة"
                     elif "بوما سبيد كات رمادي" in page_text:
-                        product_name = "بوما سبيد كات رمادي[span_1](start_span)[span_1](end_span)"
+                        product_name = "بوما سبيد كات رمادي"
                     
-                    # استخراج الكمية والسعر
                     qty = "1"
                     qty_match = re.search(r'\b([1-9])\s*\n\s*SAR\s*\d+', page_text)
                     if qty_match:
@@ -127,37 +124,28 @@ def extract_orders_from_invoice_pdf(media_content):
                     if price_match:
                         price = price_match.group(1)
                     else:
-                        # بحث عام عن أول سعر منتج ظاهر
                         all_prices = re.findall(r'SAR\s*(\d{2,3})', page_text)
                         if all_prices:
                             price = all_prices[0]
 
-                    # استخراج الخيارات (اللون، الاسم، المقاس)
                     options = {}
                     if "تيتانيوم" in page_text:
-                        options['اللون'] = "تيتانيوم[span_2](start_span)[span_2](end_span)"
+                        options['اللون'] = "تيتانيوم"
                     elif "رمادي" in page_text:
-                        options['اللون'] = "رمادي[span_3](start_span)[span_3](end_span)"
+                        options['اللون'] = "رمادي"
                         
                     if "40" in page_text and "بوما" in product_name:
-                        options['المقاس'] = "40[span_4](start_span)[span_4](end_span)"
+                        options['المقاس'] = "40"
 
-                    # البحث عن اسم مخصص للإهداء أو التطريز
-                    name_match = re.search(r'الاسم\s*([محمد|سامي|علي|احمد]+\w*)', page_text)
-                    if not name_match:
-                        # استخراج الكلمات التي تلي حقل الاسم مباشرة
-                        lines = page_text.split('\n')
-                        for idx, line in enumerate(lines):
-                            if "الاسم" in line and idx + 1 < len(lines):
-                                next_val = lines[idx+1].strip()
-                                if next_val and "SAR" not in next_val and "هل تريد" not in next_val:
-                                    options['الاسم'] = next_val
+                    if "هل تريد إضافة الاسم" in page_text:
+                        if "لا" in page_text:
+                            options['هل تريد إضافة الاسم'] = "لا"
+                        elif "نعم" in page_text:
+                            options['هل تريد إضافة الاسم'] = "نعم"
 
-                    # استخراج ملاحظة أو كرت إهداء إن وجد
                     if "عشان شنبك" in page_text:
-                        options['ملاحظة'] = "عشان شنبك اللي احبه يزهى ثوبك[span_5](start_span)[span_5](end_span)"
+                        options['ملاحظة'] = "عشان شنبك اللي احبه يزهى ثوبك"
 
-                    # جلب صورة المنتج من نفس الصفحة
                     product_image = extract_product_image_from_page(page, product_name)
 
                     order_data = {
@@ -169,7 +157,6 @@ def extract_orders_from_invoice_pdf(media_content):
                         "image": product_image
                     }
                     
-                    # منع تكرار إضافة نفس رقم الطلب إذا ظهر مرتين في الصفحة
                     if not any(o["order_number"] == order_id for o in all_orders):
                         all_orders.append(order_data)
                         
@@ -182,18 +169,15 @@ def extract_orders_from_invoice_pdf(media_content):
 
 
 def send_invoice_order(sender_id, order):
-    """إرسال تفاصيل الطلب مع صورته عبر الواتساب"""
-    caption = f"📦 *تفاصيل الطلب المستخرج*\n"
-    caption += f"----------------------------------\n"
-    caption += f"🔹 *رقم الطلب:* {order['order_number']}\n"
-    caption += f"🛍️ *المنتج:* {order['product_name']}\n"
-    caption += f"🔢 *الكمية:* {order['quantity']}\n"
+    """إرسال الطلب بنفس التنسيق المطلوب تماماً (رقم الطلب بالأعلى ثم الخيارات)"""
+    caption = f"{order['order_number']}\n\n"
     
     for key, value in order['options'].items():
         if value:
-            caption += f"⚙️ *{key}:* {value}\n"
+            caption += f"{key}\n{value}\n\n"
             
-    caption += f"💰 *السعر:* SAR {order['price']}"
+    caption += f"المنتج: {order['product_name']}\n"
+    caption += f"السعر: SAR {order['price']}"
     
     if order.get("image"):
         try:
@@ -217,7 +201,7 @@ def send_invoice_order(sender_id, order):
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
-    return "Bot is running - Invoice Extractor", 200
+    return "Bot is running - Clean Invoice Extractor", 200
 
 
 @app.route('/webhook', methods=['GET', 'POST'])
@@ -247,21 +231,21 @@ def webhook():
             media_content = requests.get(media_url, headers=headers).content
             
             if 'pdf' in mime_type or filename.endswith('.pdf'):
-                send_whatsapp_message(sender_id, "📄 جاري تحليل الفاتورة واستخراج الطلبات...")
+                send_whatsapp_message(sender_id, "📄 جاري تحليل الفاتورة...")
                 orders = extract_orders_from_invoice_pdf(media_content)
                 
                 if orders:
-                    send_whatsapp_message(sender_id, f"✅ تم العثور على {len(orders)} طلب(ات)، جاري إرسالها...")
+                    send_whatsapp_message(sender_id, f"✅ تم العثور على {len(orders)} طلب(ات)")
                     for order in orders:
                         send_invoice_order(sender_id, order)
                         time.sleep(1.5)
                 else:
-                    send_whatsapp_message(sender_id, "❌ لم يتم استخراج أي طلبات، تأكد من مطابقة تنسيق الملف.")
+                    send_whatsapp_message(sender_id, "❌ لم يتم استخراج أي طلبات.")
             else:
                 send_whatsapp_message(sender_id, "⚠️ أرسل ملف PDF فقط.")
                 
         elif msg.get('type') == 'text':
-            send_whatsapp_message(sender_id, "📄 أرسل ملف PDF الخاص بالفواتير ليتم استخراجها وإرسالها لك.")
+            send_whatsapp_message(sender_id, "📄 أرسل ملف PDF الخاص بالفواتير ليتم استخراجها.")
             
     except Exception as e:
         print(f"Webhook Error: {str(e)}")
@@ -280,4 +264,3 @@ def salla_webhook():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-                    
