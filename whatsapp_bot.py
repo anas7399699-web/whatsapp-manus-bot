@@ -4,6 +4,7 @@ import time
 import tempfile
 import re
 import fitz  # PyMuPDF
+from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -34,16 +35,87 @@ def upload_whatsapp_media(file_path, mime_type):
         return None
 
 
-def send_whatsapp_image_with_caption(to, media_id, caption):
+def send_whatsapp_image(to, media_id):
+    """إرسال الصورة وحدها بعد أن أصبحت البيانات مكتوبة عليها مباشرة"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "image",
-        "image": {"id": media_id, "caption": caption}
+        "image": {"id": media_id}
     }
     requests.post(url, headers=headers, json=data)
+
+
+# ==================== دالة دمج النصوص داخل الصورة ====================
+
+def draw_text_on_image(image_bytes, order):
+    """رسم بيانات الطلب مباشرة على الصورة"""
+    try:
+        # فتح الصورة من بايتات البيانات
+        base_image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        img_w, img_h = base_image.size
+
+        # إنشاء لوحة بيضاء أوسع بجانب الصورة أو مساحة مخصصة للنصوص (مثلاً تصميم يشبه الصورة المطلوبة)
+        # هنا سنقوم بإنشاء مساحة بيضاء على اليسار أو اليمين، أو الكتابة مباشرة على خلفية بيضاء جديدة بجانب الصورة الأصلية
+        canvas_width = img_w + 500  # إضافة مساحة جانبية للكتابة
+        canvas_height = max(img_h, 800)
+        
+        new_img = Image.new("RGBA", (canvas_width, canvas_height), "white")
+        # لصق صورة المنتج في الجانب الأيمن (أو الأيسر حسب الرغبة)
+        new_img.paste(base_image, (canvas_width - img_w - 20, (canvas_height - img_h) // 2))
+
+        draw = ImageDraw.Draw(new_img)
+        
+        # محاولة استخدام خط يدعم العربية، وإذا لم يتوفر يتم استخدام الخط الافتراضي
+        try:
+            # في بيئات لينكس مثل Render يُفضل توفير خط يدعم العربية، أو استخدام الافتراضي
+            font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
+            font_medium = ImageFont.truetype("DejaVuSans.ttf", 28)
+        except:
+            font_large = ImageFont.load_default()
+            font_medium = ImageFont.load_default()
+
+        # تجهيز النصوص المراد كتابتها بترتيب مثل الصورة
+        text_lines = []
+        text_lines.append(f"{order['order_number']}")
+        text_lines.append("")
+        
+        for key, value in order['options'].items():
+            if value:
+                text_lines.append(f"{key}")
+                text_lines.append(f"{value}")
+                text_lines.append("")
+                
+        text_lines.append(f"المنتج: {order['product_name']}")
+        text_lines.append(f"السعر: SAR {order['price']}")
+
+        # كتابة النصوص على الصورة (تحديد الإحداثيات X و Y)
+        current_y = 50
+        current_x = 40
+        
+        for line in text_lines:
+            if line == order['order_number']:
+                draw.text((current_x, current_y), line, fill="blue", font=font_large)
+                current_y += 55
+            else:
+                draw.text((current_x, current_y), line, fill="black", font=font_medium)
+                current_y += 40
+
+        # تحويل الصورة النهائية إلى بايتات لإرسالها
+        output_io = io.BytesIO()
+        new_img.convert("RGB").save(output_io, format="JPEG")
+        output_io.seek(0)
+        return output_io.read()
+
+    except Exception as e:
+        print(f"Error drawing on image: {str(e)}")
+        return image_bytes  # في حال حدث خطأ، ترجع الصورة الأصلية كما هي
+
+
+# استيراد مكتبة io المساعدة للتعامل مع البايتات
+import io
 
 
 # ==================== دوال استخراج الفواتير ====================
@@ -169,39 +241,40 @@ def extract_orders_from_invoice_pdf(media_content):
 
 
 def send_invoice_order(sender_id, order):
-    """إرسال الطلب بنفس التنسيق المطلوب تماماً (رقم الطلب بالأعلى ثم الخيارات)"""
-    caption = f"{order['order_number']}\n\n"
-    
-    for key, value in order['options'].items():
-        if value:
-            caption += f"{key}\n{value}\n\n"
-            
-    caption += f"المنتج: {order['product_name']}\n"
-    caption += f"السعر: SAR {order['price']}"
-    
+    """دمج النصوص داخل الصورة ثم إرسال الصورة وحدها بدون نص إضافي مرفق"""
     if order.get("image"):
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_img:
-                tmp_img.write(order["image"])
+            # دمج البيانات والكتابة مباشرة على بايتات الصورة
+            processed_image_bytes = draw_text_on_image(order["image"], order)
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_img:
+                tmp_img.write(processed_image_bytes)
                 tmp_img_path = tmp_img.name
             
-            image_id = upload_whatsapp_media(tmp_img_path, "image/png")
+            image_id = upload_whatsapp_media(tmp_img_path, "image/jpeg")
             os.remove(tmp_img_path)
             
             if image_id:
-                send_whatsapp_image_with_caption(sender_id, image_id, caption)
+                # إرسال الصورة فقط بدون أي نص تعليق (Caption) لأن البيانات أصبحت مرسومة داخلها
+                send_whatsapp_image(sender_id, image_id)
                 return
         except Exception as e:
-            print(f"Error sending image: {str(e)}")
+            print(f"Error processing image: {str(e)}")
     
-    send_whatsapp_message(sender_id, caption)
+    # في حال عدم وجود صورة، يتم إرسال البيانات كنص عادي
+    fallback_text = f"{order['order_number']}\n\n"
+    for key, value in order['options'].items():
+        if value:
+            fallback_text += f"{key}\n{value}\n\n"
+    fallback_text += f"المنتج: {order['product_name']}\nالسعر: SAR {order['price']}"
+    send_whatsapp_message(sender_id, fallback_text)
 
 
 # ==================== المسارات ====================
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
-    return "Bot is running - Clean Invoice Extractor", 200
+    return "Bot is running - Direct Image Text Renderer", 200
 
 
 @app.route('/webhook', methods=['GET', 'POST'])
@@ -231,7 +304,7 @@ def webhook():
             media_content = requests.get(media_url, headers=headers).content
             
             if 'pdf' in mime_type or filename.endswith('.pdf'):
-                send_whatsapp_message(sender_id, "📄 جاري تحليل الفاتورة...")
+                send_whatsapp_message(sender_id, "📄 جاري تحليل الفاتورة ودمج البيانات على الصورة...")
                 orders = extract_orders_from_invoice_pdf(media_content)
                 
                 if orders:
@@ -245,7 +318,7 @@ def webhook():
                 send_whatsapp_message(sender_id, "⚠️ أرسل ملف PDF فقط.")
                 
         elif msg.get('type') == 'text':
-            send_whatsapp_message(sender_id, "📄 أرسل ملف PDF الخاص بالفواتير ليتم استخراجها.")
+            send_whatsapp_message(sender_id, "📄 أرسل ملف PDF الخاص بالفواتير ليتم استخراجها ودمجها على الصور.")
             
     except Exception as e:
         print(f"Webhook Error: {str(e)}")
@@ -264,3 +337,4 @@ def salla_webhook():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+                    
