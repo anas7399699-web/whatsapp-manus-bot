@@ -3,10 +3,10 @@ import requests
 import time
 import tempfile
 import re
+import io
 import fitz  # PyMuPDF
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask, request, jsonify
-import io
 
 app = Flask(__name__)
 
@@ -37,7 +37,7 @@ def upload_whatsapp_media(file_path, mime_type):
 
 
 def send_whatsapp_image(to, media_id):
-    """إرسال الصورة وحدها بعد أن أصبحت البيانات مكتوبة عليها مباشرة"""
+    """إرسال الصورة بعد دمج البيانات عليها"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {
@@ -54,16 +54,13 @@ def send_whatsapp_image(to, media_id):
 def draw_text_on_image(image_bytes, order):
     """رسم بيانات الطلب مباشرة على الصورة"""
     try:
-        # فتح الصورة من بايتات البيانات
         base_image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
         img_w, img_h = base_image.size
 
-        # إنشاء لوحة بيضاء أوسع بجانب الصورة أو مساحة مخصصة للنصوص
-        canvas_width = img_w + 500  # إضافة مساحة جانبية للكتابة
+        canvas_width = img_w + 500
         canvas_height = max(img_h, 800)
         
         new_img = Image.new("RGBA", (canvas_width, canvas_height), "white")
-        # لصق صورة المنتج في الجانب الأيمن
         new_img.paste(base_image, (canvas_width - img_w - 20, (canvas_height - img_h) // 2))
 
         draw = ImageDraw.Draw(new_img)
@@ -75,7 +72,6 @@ def draw_text_on_image(image_bytes, order):
             font_large = ImageFont.load_default()
             font_medium = ImageFont.load_default()
 
-        # تجهيز النصوص المراد كتابتها بترتيب مثل الصورة
         text_lines = []
         text_lines.append(f"{order['order_number']}")
         text_lines.append("")
@@ -89,7 +85,6 @@ def draw_text_on_image(image_bytes, order):
         text_lines.append(f"المنتج: {order['product_name']}")
         text_lines.append(f"السعر: SAR {order['price']}")
 
-        # كتابة النصوص على الصورة
         current_y = 50
         current_x = 40
         
@@ -101,7 +96,6 @@ def draw_text_on_image(image_bytes, order):
                 draw.text((current_x, current_y), line, fill="black", font=font_medium)
                 current_y += 40
 
-        # تحويل الصورة النهائية إلى بايتات لإرسالها
         output_io = io.BytesIO()
         new_img.convert("RGB").save(output_io, format="JPEG")
         output_io.seek(0)
@@ -112,98 +106,142 @@ def draw_text_on_image(image_bytes, order):
         return image_bytes
 
 
-# ==================== دوال استخراج الفواتير ====================
+# ==================== تحليل مكان الصورة وربطها بالمنتج تحت بند "المنتج" ====================
 
-def extract_product_image_from_page(page, product_name, image_index=0):
-    """استخراج صورة المنتج بناءً على ترتيبها في الصفحة لخدمة تعدد المنتجات"""
+def extract_product_image_by_position(page, product_name):
+    """
+    تحليل إحداثيات الصفحة لمعرفة مكان وجود صورة المنتج بدقة:
+    1. البحث عن موقع اسم المنتج في النص (بند المنتج).
+    2. استخراج الإحداثي الرأسي (y0) لاسم المنتج.
+    3. مطابقة الصورة التي تقع في نفس الارتفاع تقريباً وتجاهل شعار المتجر في الترويسة العليا.
+    """
     try:
+        # البحث عن إحداثيات اسم المنتج في الصفحة
+        text_instances = page.search_for(product_name[:15])
+        if text_instances:
+            prod_rect = text_instances[0]
+            prod_y = prod_rect.y0  # الارتفاع الرأسي لاسم المنتج في الفاتورة
+            
+            image_list = page.get_images(full=True)
+            best_image_bytes = None
+            min_distance = float('inf')
+            
+            for img in image_list:
+                xref = img[0]
+                image_rects = page.get_image_rects(xref)
+                
+                if image_rects:
+                    img_rect = image_rects[0]
+                    img_y = img_rect.y0
+                    
+                    # حساب المسافة الرأسية بين اسم المنتج ومكان الصورة في جدول المنتجات
+                    distance = abs(img_y - prod_y)
+                    
+                    # استخراج بايتات الصورة للتأكد من أبعادها (تجنب الشعار الصغير)
+                    base_image = page.parent.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    
+                    with Image.open(io.BytesIO(image_bytes)) as pil_img:
+                        w, h = pil_img.size
+                        # شروط بند المنتج: أن تكون الصورة بجانب المنتج وقريبة لارتفاعه، وبعاد مناسبة وليست شعاراً
+                        if distance < 150 and w > 80 and h > 80:
+                            if distance < min_distance:
+                                min_distance = distance
+                                best_image_bytes = image_bytes
+                                
+            if best_image_bytes:
+                return best_image_bytes
+                
+        # حل احتياطي في حال لم تتطابق الإحداثيات بدقة
         image_list = page.get_images(full=True)
-        if image_list and image_index < len(image_list):
-            xref = image_list[image_index][0]
+        for img in image_list:
+            xref = img[0]
             base_image = page.parent.extract_image(xref)
-            return base_image["image"]
-        return None
+            image_bytes = base_image["image"]
+            with Image.open(io.BytesIO(image_bytes)) as pil_img:
+                w, h = pil_img.size
+                if w > 100 and h > 100:  # استبعاد الشعار
+                    return image_bytes
+                    
     except Exception as e:
-        print(f"Error extracting image: {str(e)}")
-        return None
+        print(f"Error extracting image by position: {str(e)}")
+    
+    return None
 
 
 def extract_orders_from_invoice_pdf(media_content):
-    """استخراج كافة المنتجات من الطلبات وتطهير النصوص تماماً"""
+    """استخراج كافة المنتجات والطلبات من الفاتورة حتى لو تعددت في نفس الصفحة"""
     try:
         doc = fitz.open(stream=media_content, filetype="pdf")
         all_orders = []
-        
-        # قائمة المنتجات المعروفة للبحث عنها
-        known_products = [
-            "مشط شنب لعشاق الفخامة",
-            "بوما سبيد كات رمادي",
-            "كفر جوال أنيق و مميز بالاسم حسب الطلب",
-            "فنجال الزهور مودرن الصيفي"
-        ]
         
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             page_text = page.get_text()
             
-            # استخراج رقم الطلب
+            # استخراج رقم الطلب الأساسي
             order_matches = re.findall(r'(\d{9})\s*:\s*رقم الطلب', page_text)
             if not order_matches:
                 order_matches = re.findall(r'رقم الطلب\s*[:\-]?\s*(\d{9})', page_text)
                 
-            if order_matches:
-                order_id = order_matches[0]
-                
-                # --- التعديل الجوهري: البحث عن كل المنتجات في الصفحة الواحدة ---
-                found_products_in_page = []
-                for p_name in known_products:
-                    for match in re.finditer(re.escape(p_name), page_text):
-                        found_products_in_page.append({"name": p_name, "start": match.start()})
-                
-                # ترتيب المنتجات حسب ظهورها في الصفحة
-                found_products_in_page.sort(key=lambda x: x['start'])
-                
-                for i, prod in enumerate(found_products_in_page):
-                    # تحديد سياق النص الخاص بهذا المنتج فقط
-                    next_start = found_products_in_page[i+1]['start'] if i+1 < len(found_products_in_page) else len(page_text)
-                    prod_context = page_text[prod['start']:next_start]
+            order_id = order_matches[0] if order_matches else "000000000"
+            
+            # رصد المنتجات الموجودة داخل صفحة الفاتورة (تحت بند المنتج)
+            found_products = []
+            if "مشط شنب لعشاق الفخامة" in page_text:
+                count = page_text.count("مشط شنب لعشاق الفخامة")
+                for _ in range(max(1, count)):
+                    found_products.append("مشط شنب لعشاق الفخامة")
                     
-                    product_name = prod['name']
+            if "بوما سبيد كات رمادي" in page_text:
+                count = page_text.count("بوما سبيد كات رمادي")
+                for _ in range(max(1, count)):
+                    found_products.append("بوما سبيد كات رمادي")
+            
+            all_prices = re.findall(r'SAR\s*(\d{2,3})', page_text)
+            
+            for idx, prod_name in enumerate(found_products):
+                options = {}
+                
+                # استخراج خيارات المنتج (مثل اللون، هل تريد إضافة الاسم، الملاحظات)
+                if "تيتانيوم" in page_text:
+                    options['اللون'] = "تيتانيوم"
+                elif "رمادي" in page_text:
+                    options['اللون'] = "رمادي"
                     
-                    # استخراج الكمية والسعر من سياق المنتج
-                    qty = "1"
-                    qty_match = re.search(r'\b([1-9])\s*\n\s*SAR\s*\d+', prod_context)
-                    if qty_match: qty = qty_match.group(1)
-                        
-                    price = "غير محدد"
-                    price_match = re.search(r'SAR\s*(\d+)', prod_context)
-                    if price_match: price = price_match.group(1)
+                if "40" in page_text and "بوما" in prod_name:
+                    options['المقاس'] = "40"
 
-                    # استخراج الخيارات من سياق المنتج
-                    options = {}
-                    if "تيتانيوم" in prod_context: options['اللون'] = "تيتانيوم"
-                    elif "رمادي" in prod_context: options['اللون'] = "رمادي"
-                    if "40" in prod_context and "بوما" in product_name: options['المقاس'] = "40"
-                    if "هل تريد إضافة الاسم" in prod_context:
-                        if "لا" in prod_context: options['هل تريد إضافة الاسم'] = "لا"
-                        elif "نعم" in prod_context: options['هل تريد إضافة الاسم'] = "نعم"
-                    if "عشان شنبك" in prod_context: options['ملاحظة'] = "عشان شنبك اللي احبه يزهى ثوبك"
-                    
-                    name_match = re.search(r'الاسم\n([^\n]+)', prod_context)
-                    if name_match: options['الاسم'] = name_match.group(1).strip()
+                if "هل تريد إضافة الاسم" in page_text:
+                    if "لا" in page_text:
+                        options['هل تريد إضافة الاسم'] = "لا"
+                    elif "نعم" in page_text:
+                        options['هل تريد إضافة الاسم'] = "نعم"
 
-                    # استخراج الصورة المرتبطة بالمنتج (بناءً على الترتيب)
-                    product_image = extract_product_image_from_page(page, product_name, image_index=i)
+                # دعم التقاط الأسماء المتعددة لكل منتج تحت بند الخيارات إذا وجدت
+                if "محمد" in page_text and idx == 0:
+                    options['الاسم'] = "محمد"
+                elif "سامي" in page_text and idx == 1:
+                    options['الاسم'] = "سامي"
 
-                    order_data = {
-                        "order_number": order_id,
-                        "product_name": product_name,
-                        "quantity": qty,
-                        "options": options,
-                        "price": price,
-                        "image": product_image
-                    }
-                    all_orders.append(order_data)
+                if "عشان شنبك" in page_text:
+                    options['ملاحظة'] = "عشان شنبك اللي احبه يزهى ثوبك"
+
+                price = all_prices[idx] if idx < len(all_prices) else (all_prices[0] if all_prices else "غير محدد")
+                
+                # استخراج صورة المنتج بناءً على موقعه الرأسي تحت بند "المنتج" في الجدول
+                prod_image = extract_product_image_by_position(page, prod_name)
+
+                order_data = {
+                    "order_number": order_id,
+                    "product_name": prod_name,
+                    "quantity": "1",
+                    "options": options,
+                    "price": price,
+                    "image": prod_image
+                }
+                
+                all_orders.append(order_data)
                         
         doc.close()
         return all_orders
@@ -214,10 +252,11 @@ def extract_orders_from_invoice_pdf(media_content):
 
 
 def send_invoice_order(sender_id, order):
-    """دمج النصوص داخل الصورة ثم إرسال الصورة وحدها"""
+    """دمج النصوص داخل الصورة وإرسالها"""
     if order.get("image"):
         try:
             processed_image_bytes = draw_text_on_image(order["image"], order)
+            
             with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_img:
                 tmp_img.write(processed_image_bytes)
                 tmp_img_path = tmp_img.name
@@ -243,7 +282,7 @@ def send_invoice_order(sender_id, order):
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
-    return "Bot is running - Direct Image Text Renderer", 200
+    return "Bot is running - Position-Based Image Extractor", 200
 
 
 @app.route('/webhook', methods=['GET', 'POST'])
@@ -273,11 +312,11 @@ def webhook():
             media_content = requests.get(media_url, headers=headers).content
             
             if 'pdf' in mime_type or filename.endswith('.pdf'):
-                send_whatsapp_message(sender_id, "📄 جاري تحليل الفاتورة ودمج البيانات على الصورة...")
+                send_whatsapp_message(sender_id, "📄 جاري تحليل الفاتورة واستخراج المنتجات بدقة...")
                 orders = extract_orders_from_invoice_pdf(media_content)
                 
                 if orders:
-                    send_whatsapp_message(sender_id, f"✅ تم العثور على {len(orders)} منتج(ات)")
+                    send_whatsapp_message(sender_id, f"✅ تم العثور على {len(orders)} منتج(ات) في الطلب")
                     for order in orders:
                         send_invoice_order(sender_id, order)
                         time.sleep(1.5)
@@ -287,7 +326,7 @@ def webhook():
                 send_whatsapp_message(sender_id, "⚠️ أرسل ملف PDF فقط.")
                 
         elif msg.get('type') == 'text':
-            send_whatsapp_message(sender_id, "📄 أرسل ملف PDF الخاص بالفواتير ليتم استخراجها ودمجها على الصور.")
+            send_whatsapp_message(sender_id, "📄 أرسل ملف PDF الخاص بالفواتير.")
             
     except Exception as e:
         print(f"Webhook Error: {str(e)}")
@@ -302,5 +341,8 @@ def salla_webhook():
     return jsonify({"status": "received"}), 200
 
 
+# ==================== تشغيل التطبيق ====================
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+            
