@@ -450,7 +450,7 @@ def process_salla_webhook_async(raw_data):
 
             print(f"[Salla] ✅ سيتم إرسال إشعار للطلب {order_id} - الحالة: {order_status}")
 
-                        final_msg = (
+                final_msg = (
                 f"**العنوان /** {full_address}\n"
                 f"**رقم الطلبية /** {order_id}\n"
                 f"**رقم المستلم /** +{mobile_str}\n"
