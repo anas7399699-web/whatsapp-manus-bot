@@ -29,8 +29,6 @@ salla_lock = threading.Lock()
 MY_WHATSAPP_NUMBER = "967739969981"
 
 
-# ==================== دوال واتساب الأساسية ====================
-
 def send_whatsapp_message(to, text):
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
@@ -62,8 +60,6 @@ def send_whatsapp_image_with_caption(to, media_id, caption):
     requests.post(url, headers=headers, json=data)
 
 
-# ==================== معالجة ملفات PDF ====================
-
 def handle_pdf_logic(sender_id, media_content):
     try:
         doc = fitz.open(stream=media_content, filetype="pdf")
@@ -86,8 +82,6 @@ def handle_pdf_logic(sender_id, media_content):
         send_whatsapp_message(sender_id, "❌ حدث خطأ في معالجة ملف البوالص.")
 
 
-# ==================== معالجة Excel (الرسائل المنفصلة) ====================
-
 def send_orders_as_messages(sender_id, orders, region_name):
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
@@ -102,8 +96,6 @@ def send_orders_as_messages(sender_id, orders, region_name):
             time.sleep(6)
     send_whatsapp_message(sender_id, f"✅ تم إرسال {len(orders)} طلب لـ {region_name}")
 
-
-# ==================== استخراج البيانات من رسائل الطلب ====================
 
 def extract_data_from_messages(orders):
     orders_data = []
@@ -142,93 +134,75 @@ def extract_data_from_messages(orders):
     return pd.DataFrame(orders_data)
 
 
-# ==================== معالجة Excel (ملف Excel مع أعمدة إضافية) ====================
-
 def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None):
-    """
-    إرسال الطلبات كملف Excel مع الاحتفاظ بجميع الأعمدة من الملف الأصلي
-    مع الأولوية لبيانات المستلم (إن وجدت) أو بيانات العميل
-    """
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
-    
+
     try:
-        # تصفية الطلبات حسب المنطقة
         if region_name == "الرياض":
             filtered_orders = [order for order in orders if "الرياض" in order]
         elif region_name == "باقي المناطق":
             filtered_orders = [order for order in orders if "الرياض" not in order]
         else:
             filtered_orders = orders
-        
+
         if not filtered_orders:
             send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
             return
-        
-        # إذا كان لدينا مسار الملف الأصلي، نقرأه مباشرة
+
         if original_file_path and os.path.exists(original_file_path):
             df_original = pd.read_excel(original_file_path)
-            
+
             required_columns = [
-                'اسم المستلم',
-                'رقم المستلم',
-                'العنوان',
-                'المدينة',
-                'الرمز البريدي',
-                'رقم الشارع',
-                'معرف الحي',
-                'العنوان الوطني المختصر',
-                'رقم المبنى',
-                'الرقم الإضافي',
-                'اسم العميل',
-                'رقم العميل'
+                'اسم المستلم', 'رقم المستلم', 'العنوان', 'المدينة',
+                'الرمز البريدي', 'رقم الشارع', 'معرف الحي',
+                'العنوان الوطني المختصر', 'رقم المبنى', 'الرقم الإضافي',
+                'اسم العميل', 'رقم العميل'
             ]
-            
+
             available_columns = []
             for col in required_columns:
                 if col in df_original.columns:
                     available_columns.append(col)
                 else:
                     print(f"⚠️ العمود '{col}' غير موجود في الملف الأصلي")
-            
-            # الأولوية لبيانات المستلم
+
             if 'اسم المستلم' not in df_original.columns and 'اسم العميل' in df_original.columns:
                 df_original['اسم المستلم'] = df_original['اسم العميل']
                 if 'اسم المستلم' not in available_columns:
                     available_columns.append('اسم المستلم')
                 print("✅ تم إنشاء عمود 'اسم المستلم' من 'اسم العميل'")
-            
+
             if 'رقم المستلم' not in df_original.columns and 'رقم العميل' in df_original.columns:
                 df_original['رقم المستلم'] = df_original['رقم العميل']
                 if 'رقم المستلم' not in available_columns:
                     available_columns.append('رقم المستلم')
                 print("✅ تم إنشاء عمود 'رقم المستلم' من 'رقم العميل'")
-            
+
             if 'اسم المستلم' not in df_original.columns and 'اسم العميل' not in df_original.columns:
                 print("⚠️ لا يوجد عمود لاسم المستلم أو العميل، سيتم إنشاء عمود فارغ")
                 df_original['اسم المستلم'] = 'غير محدد'
                 available_columns.append('اسم المستلم')
-            
+
             if 'رقم المستلم' not in df_original.columns and 'رقم العميل' not in df_original.columns:
                 print("⚠️ لا يوجد عمود لرقم المستلم أو العميل، سيتم إنشاء عمود فارغ")
                 df_original['رقم المستلم'] = 'غير محدد'
                 available_columns.append('رقم المستلم')
-            
-            # تصفية الصفوف حسب المنطقة
+
             region_column = None
             possible_region_columns = ['المنطقة', 'المدينة', 'city', 'City', 'region', 'Region']
             for col in possible_region_columns:
                 if col in df_original.columns:
                     region_column = col
                     break
-            
+
             if region_column:
                 if region_name == "الرياض":
                     df_filtered = df_original[df_original[region_column].str.contains('الرياض', case=False, na=False)]
                 else:
                     df_filtered = df_original[~df_original[region_column].str.contains('الرياض', case=False, na=False)]
-                
+
                 if len(df_filtered) == 0:
                     print(f"⚠️ لم يتم العثور على طلبات في {region_name}")
                     send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
@@ -236,22 +210,20 @@ def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None
             else:
                 print(f"⚠️ لم يتم العثور على عمود المنطقة، نستخدم جميع الصفوف")
                 df_filtered = df_original
-            
-            # إزالة الأعمدة المكررة
+
             if 'اسم المستلم' in df_filtered.columns and 'اسم العميل' in df_filtered.columns:
                 df_filtered = df_filtered.drop(columns=['اسم العميل'])
                 if 'اسم العميل' in available_columns:
                     available_columns.remove('اسم العميل')
-            
+
             if 'رقم المستلم' in df_filtered.columns and 'رقم العميل' in df_filtered.columns:
                 df_filtered = df_filtered.drop(columns=['رقم العميل'])
                 if 'رقم العميل' in available_columns:
                     available_columns.remove('رقم العميل')
-            
+
             final_columns = [col for col in available_columns if col in df_filtered.columns]
             df_filtered = df_filtered[final_columns]
         else:
-            # الطريقة القديمة (بدون ملف أصلي)
             orders_data = []
             for order_msg in filtered_orders:
                 order_dict = {
@@ -287,15 +259,13 @@ def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None
                 orders_data.append(order_dict)
             df_filtered = pd.DataFrame(orders_data)
             df_filtered = df_filtered[['العنوان', 'المدينة', 'رقم الطلبية', 'رقم المستلم', 'اسم المستلم']]
-        
-        # حفظ الملف
+
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             output_path = tmp.name
             df_filtered.to_excel(output_path, index=False, sheet_name=region_name)
-        
-        # رفع الملف إلى واتساب
+
         media_id = upload_whatsapp_media(output_path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        
+
         if media_id:
             url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
             headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
@@ -313,15 +283,13 @@ def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None
             send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}\nعدد الطلبات: {len(df_filtered)}")
         else:
             send_whatsapp_message(sender_id, f"❌ فشل في إرسال ملف {region_name}")
-        
+
         os.remove(output_path)
-        
+
     except Exception as e:
         send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
         print(f"Excel error: {str(e)}")
 
-
-# ==================== معالجة ملف Excel الرئيسية ====================
 
 def handle_document_async(sender_id, doc):
     mime_type = doc.get('mime_type', '')
@@ -373,8 +341,6 @@ def handle_document_async(sender_id, doc):
         handle_pdf_logic(sender_id, media_content)
 
 
-# ==================== دالة معالجة إشعارات سلة ====================
-
 def process_salla_webhook_async(raw_data):
     with salla_lock:
         try:
@@ -386,20 +352,12 @@ def process_salla_webhook_async(raw_data):
             )
             order_status = raw_data.get('status', '')
             print(f"[Salla] 🔍 الحالة المستقبلة: '{order_status}'")
-            
+
             allowed_statuses = [
-                'جاري التوصيل',
-                'جاري التوصيل ',
-                'جاريالتوصيل',
-                'تم التنفيذ',
-                'تم التنفيذ ',
-                'تمالتنفيذ',
-                'shipped',
-                'completed',
-                'delivered',
-                'out_for_delivery',
-                'in_progress',
-                'processing'
+                'جاري التوصيل', 'جاري التوصيل ', 'جاريالتوصيل',
+                'تم التنفيذ', 'تم التنفيذ ', 'تمالتنفيذ',
+                'shipped', 'completed', 'delivered',
+                'out_for_delivery', 'in_progress', 'processing'
             ]
             if order_status not in allowed_statuses:
                 print(f"[Salla] ⏭️ تم تجاهل تحديث الطلب {order_id} - الحالة: '{order_status}' (غير مسموحة)")
@@ -410,16 +368,16 @@ def process_salla_webhook_async(raw_data):
             processed_salla_orders.add(order_id)
             if len(processed_salla_orders) > 1000:
                 processed_salla_orders.clear()
-            
+
             recipient_obj = raw_data.get('shipping_address') or raw_data.get('address') or {}
             customer_obj = raw_data.get('customer') or {}
-            
+
             recipient_name = (
                 recipient_obj.get('name')
                 or customer_obj.get('name')
                 or 'غير متوفر'
             ).strip()
-            
+
             recipient_mobile = (
                 recipient_obj.get('phone')
                 or recipient_obj.get('mobile')
@@ -427,16 +385,16 @@ def process_salla_webhook_async(raw_data):
                 or customer_obj.get('phone')
                 or ''
             )
-            
+
             city = recipient_obj.get('city', '') or customer_obj.get('city', '')
             district = recipient_obj.get('district', '') or customer_obj.get('district', '')
             street = recipient_obj.get('street', '') or customer_obj.get('street', '')
-            
+
             if not city and not district and not street:
                 city = customer_obj.get('city', '')
                 district = customer_obj.get('district', '')
                 street = customer_obj.get('street', '')
-            
+
             address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
             full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
 
@@ -450,7 +408,7 @@ def process_salla_webhook_async(raw_data):
 
             print(f"[Salla] ✅ سيتم إرسال إشعار للطلب {order_id} - الحالة: {order_status}")
 
-                final_msg = (
+            final_msg = (
                 f"**العنوان /** {full_address}\n"
                 f"**رقم الطلبية /** {order_id}\n"
                 f"**رقم المستلم /** +{mobile_str}\n"
@@ -463,8 +421,6 @@ def process_salla_webhook_async(raw_data):
             print(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
 
 
-# ==================== دالة منع نوم Render ====================
-
 def keep_alive():
     RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
     if not RENDER_URL:
@@ -476,8 +432,6 @@ def keep_alive():
         except:
             pass
 
-
-# ==================== المسارات ====================
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
@@ -496,26 +450,26 @@ def webhook():
         msg = data['entry'][0]['changes'][0]['value']['messages'][0]
         msg_id = msg.get('id')
         sender_id = msg.get('from')
-        
+
         msg_timestamp = int(msg.get('timestamp'))
         current_time = int(time.time())
-        
+
         if (current_time - msg_timestamp) > 300:
             return jsonify({"status": "ignored_old_message"}), 200
 
         if msg_id in processed_messages:
             return jsonify({"status": "duplicate"}), 200
-        
-        processed_messages.add(msg_id)
+
+               processed_messages.add(msg_id)
         if len(processed_messages) > 1000:
             processed_messages.clear()
 
         if msg.get('type') == 'document':
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
-            
+
         elif msg.get('type') == 'text':
             text_body = msg.get('text', {}).get('body', '').lower()
-            
+
             if sender_id in user_temp_data:
                 if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
                     del user_temp_data[sender_id]
@@ -526,9 +480,9 @@ def webhook():
                     riyadh_orders = data_store["riyadh"]
                     other_orders = data_store["others"]
                     original_file_path = data_store.get("original_file_path")
-                    
+
                     user_temp_expiry[sender_id] = time.time() + 1800
-                    
+
                     if "رياض رسائل" in text_body:
                         send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
                     elif "رياض اكسل" in text_body or "رياض excel" in text_body:
@@ -555,14 +509,12 @@ def webhook():
                         send_whatsapp_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
             else:
                 send_whatsapp_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
-            
+
     except Exception as e:
         print(f"Webhook error: {str(e)}")
-        
+
     return jsonify({"status": "ok"}), 200
 
-
-# ==================== مسار سلة مع كود تشخيصي ====================
 
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
@@ -572,7 +524,7 @@ def salla_webhook():
     print(f"🚨 Headers: {dict(request.headers)}")
     print(f"🚨 Body: {request.get_data(as_text=True)}")
     print("="*50)
-    
+
     if request.method == 'GET':
         print("Salla webhook verification test received via GET.")
         return "Webhook is active", 200
@@ -585,7 +537,7 @@ def salla_webhook():
         try:
             event = data.get('event', '')
             raw_data = data.get('data', {})
-            
+
             print(f"📢 وصل إشعار جديد من سلة! الحدث: {event}")
 
             if event in ['order.updated', 'order.status.updated']:
@@ -598,7 +550,7 @@ def salla_webhook():
 
         except Exception as e:
             print(f"Salla Webhook Route Error: {str(e)}")
-            
+
         return jsonify({"status": "received"}), 200
 
 
@@ -611,8 +563,6 @@ def debug_salla():
         return jsonify({"status": "debug_received"}), 200
     return "Debug endpoint active - Send POST requests here to test", 200
 
-
-# ==================== تشغيل التطبيق ====================
 
 if __name__ == '__main__':
     threading.Thread(target=keep_alive, daemon=True).start()
