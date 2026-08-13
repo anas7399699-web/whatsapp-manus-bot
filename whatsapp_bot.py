@@ -151,25 +151,40 @@ def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None
             for col in possible_columns:
                 if col in df_original.columns:
                     region_column = col
+                    print(f"✅ تم العثور على عمود المنطقة: '{region_column}'")
                     break
             
             if region_column:
                 # تصفية حسب المنطقة من الملف الأصلي
                 if region_name == "الرياض":
-                    df_filtered = df_original[df_original[region_column].str.contains('الرياض', case=False, na=False)]
+                    df_filtered = df_original[df_original[region_column].astype(str).str.contains('الرياض', case=False, na=False)]
+                    print(f"🔍 تم تصفية الرياض: {len(df_filtered)} طلب")
                 elif region_name == "باقي المناطق":
-                    df_filtered = df_original[~df_original[region_column].str.contains('الرياض', case=False, na=False)]
+                    df_filtered = df_original[~df_original[region_column].astype(str).str.contains('الرياض', case=False, na=False)]
+                    print(f"🔍 تم تصفية باقي المناطق: {len(df_filtered)} طلب")
                 else:  # "جميع الطلبات"
                     df_filtered = df_original
+                    print(f"🔍 جميع الطلبات: {len(df_filtered)} طلب")
                 
                 # إذا لم يتم العثور على طلبات، نستخدم الطريقة القديمة
                 if len(df_filtered) == 0:
                     print(f"⚠️ لم يتم العثور على طلبات في {region_name} باستخدام عمود '{region_column}'")
-                    df_filtered = extract_data_from_messages(orders)
+                    # استخدام الطريقة القديمة للتصفية من رسائل الطلب
+                    if region_name == "الرياض":
+                        filtered_orders = [order for order in orders if "الرياض" in order]
+                    elif region_name == "باقي المناطق":
+                        filtered_orders = [order for order in orders if "الرياض" not in order]
+                    else:
+                        filtered_orders = orders
+                    
+                    if not filtered_orders:
+                        send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
+                        return
+                    
+                    df_filtered = extract_data_from_messages(filtered_orders)
             else:
                 # إذا لم يوجد عمود المنطقة، نستخدم رسائل الطلب للتصفية
                 print("⚠️ لم يتم العثور على عمود المنطقة، نستخدم رسائل الطلب للتصفية")
-                # تصفية رسائل الطلب حسب المنطقة
                 if region_name == "الرياض":
                     filtered_orders = [order for order in orders if "الرياض" in order]
                 elif region_name == "باقي المناطق":
@@ -185,10 +200,12 @@ def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None
             
             # إذا كانت النتيجة فارغة، نستخدم الطريقة القديمة
             if len(df_filtered) == 0:
+                print("⚠️ النتيجة فارغة، نستخدم الطريقة القديمة")
                 df_filtered = extract_data_from_messages(orders)
                 
         else:
             # الطريقة القديمة (بدون ملف أصلي)
+            print("⚠️ لا يوجد ملف أصلي، نستخدم رسائل الطلب للتصفية")
             if region_name == "الرياض":
                 filtered_orders = [order for order in orders if "الرياض" in order]
             elif region_name == "باقي المناطق":
