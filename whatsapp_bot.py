@@ -5,26 +5,23 @@ import time
 import threading
 import tempfile
 import re
-import fitz  # PyMuPDF لقراءة PDF
+import fitz
 from PIL import Image
 from flask import Flask, request, jsonify
 from process_orders import process_excel_orders_to_list
-import pandas as pd  # لإنشاء ملفات Excel
+import pandas as pd
 
 app = Flask(__name__)
 
-# ==================== إعدادات Render ====================
 ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 
-# ==================== الذواكر المؤقتة ====================
 processed_messages = set()
 processed_salla_orders = set()
 user_temp_data = {}
 user_temp_expiry = {}
 
-# ==================== إعدادات إضافية ====================
 salla_lock = threading.Lock()
 MY_WHATSAPP_NUMBER = "967739969981"
 
@@ -460,7 +457,7 @@ def webhook():
         if msg_id in processed_messages:
             return jsonify({"status": "duplicate"}), 200
 
-               processed_messages.add(msg_id)
+        processed_messages.add(msg_id)
         if len(processed_messages) > 1000:
             processed_messages.clear()
 
