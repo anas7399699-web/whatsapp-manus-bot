@@ -468,19 +468,26 @@ def webhook():
         msg = data['entry'][0]['changes'][0]['value']['messages'][0]
         msg_id = msg.get('id')
         sender_id = msg.get('from')
-        msg_timestamp = int(msg.get('timestamp')        current_time = int(time.time())
+        
+        msg_timestamp = int(msg.get('ti        msg_timestamp = int(msg.get('timestamp'))
+        current_time = int(time.time())
+        
         if (current_time - msg_timestamp) > 300:
             return jsonify({"status": "ignored_old_message"}), 200
+
         if msg_id in processed_messages:
             return jsonify({"status": "duplicate"}), 200
+        
         processed_messages.add(msg_id)
         if len(processed_messages) > 1000:
             processed_messages.clear()
 
         if msg.get('type') == 'document':
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
+            
         elif msg.get('type') == 'text':
             text_body = msg.get('text', {}).get('body', '').lower()
+            
             if sender_id in user_temp_data:
                 if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
                     del user_temp_data[sender_id]
@@ -491,8 +498,9 @@ def webhook():
                     riyadh_orders = data_store["riyadh"]
                     other_orders = data_store["others"]
                     original_file_path = data_store.get("original_file_path")
+                    
                     user_temp_expiry[sender_id] = time.time() + 1800
-
+                    
                     if "رياض رسائل" in text_body:
                         send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
                     elif "رياض اكسل" in text_body or "رياض excel" in text_body:
@@ -519,8 +527,10 @@ def webhook():
                         send_whatsapp_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
             else:
                 send_whatsapp_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
+            
     except Exception as e:
         print(f"Webhook error: {str(e)}")
+        
     return jsonify({"status": "ok"}), 200
 
 
@@ -528,34 +538,46 @@ def webhook():
 
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
+    """مسار استقبال إشعارات سلة - مع كود تشخيصي"""
     print("="*50)
     print("🚨 تم الوصول إلى مسار /salla-webhook")
     print(f"🚨 Method: {request.method}")
     print(f"🚨 Headers: {dict(request.headers)}")
     print(f"🚨 Body: {request.get_data(as_text=True)}")
     print("="*50)
+    
     if request.method == 'GET':
         print("Salla webhook verification test received via GET.")
         return "Webhook is active", 200
+
     if request.method == 'POST':
         data = request.get_json(force=True, silent=True)
         if not data:
             return jsonify({"status": "no_data"}), 400
+
         try:
             event = data.get('event', '')
             raw_data = data.get('data', {})
+            
             print(f"📢 وصل إشعار جديد من سلة! الحدث: {event}")
+
             if event in ['order.updated', 'order.status.updated']:
-                threading.Thread(target=process_salla_webhook_async, args=(raw_data,)).start()
+                threading.Thread(
+                    target=process_salla_webhook_async,
+                    args=(raw_data,)
+                ).start()
             else:
                 print(f"⚠️ تم تجاهل الحدث (ليس تحديث طلب): {event}")
+
         except Exception as e:
             print(f"Salla Webhook Route Error: {str(e)}")
+            
         return jsonify({"status": "received"}), 200
 
 
 @app.route('/debug-salla', methods=['POST', 'GET'])
 def debug_salla():
+    """مسار تشخيصي لاختبار إرساليات سلة"""
     if request.method == 'POST':
         data = request.get_json(force=True, silent=True)
         print(f"🔍 DEBUG - Received raw data: {data}")
