@@ -1,4 +1,4 @@
-# التحديث الأخير: 2026-08-13 - إضافة أعمدة جديدة إلى ملفات Excel
+# التحديث الأخير: 2026-08-13 - إضافة أعمدة جديدة إلى ملفات Excel والأولوية لبيانات المستلم
 import os
 import requests
 import time
@@ -185,11 +185,11 @@ def send_orders_as_excel(sender_id, orders_data, region_name):
         
         # تحديد ترتيب الأعمدة المطلوب
         columns_order = [
-            'العنوان',
+            'عنوان العميل',
             'المدينة',
-            'رقم الطلبية',
-            'رقم المستلم',
-            'اسم المستلم',
+            'رقم الطلب',
+            'رقم الجوال',
+            'اسم العميل',
             'الرمز البريدي',
             'رقم الشارع',
             'معرف الحي',
@@ -296,10 +296,11 @@ def handle_document_async(sender_id, doc):
             
             # الأعمدة المطلوبة
             required_columns = [
-                'العنوان', 'المدينة', 'رقم الطلبية', 
-                'رقم المستلم', 'اسم المستلم',
+                'عنوان العميل', 'المدينة', 'رقم الطلب', 
+                'رقم الجوال', 'اسم العميل',
                 'الرمز البريدي', 'رقم الشارع', 'معرف الحي',
-                'العنوان الوطني المختصر', 'رقم المبنى', 'الرقم الإضافي'
+                'العنوان الوطني المختصر', 'رقم المبنى', 'الرقم الإضافي',
+                'إسم المستلم الثاني', 'جوال المستلم'
             ]
             
             # التأكد من وجود الأعمدة الأساسية
@@ -311,7 +312,7 @@ def handle_document_async(sender_id, doc):
             for index, row in df_original.iterrows():
                 # استخراج المدينة من عمود المدينة أو من العنوان
                 city = str(row.get('المدينة', '')).strip()
-                address = str(row.get('العنوان', '')).strip()
+                address = str(row.get('عنوان العميل', '')).strip()
                 
                 # إذا كانت المدينة فارغة، حاول استخراجها من العنوان
                 if not city and address:
@@ -323,13 +324,22 @@ def handle_document_async(sender_id, doc):
                     elif '،' in address:
                         city = address.split('،')[0].strip()
                 
+                # الأولوية لبيانات المستلم الثاني إذا كانت موجودة
+                recipient_name = str(row.get('إسم المستلم الثاني', '')).strip()
+                if not recipient_name:
+                    recipient_name = str(row.get('اسم العميل', '')).strip()
+                
+                recipient_phone = str(row.get('جوال المستلم', '')).strip()
+                if not recipient_phone:
+                    recipient_phone = str(row.get('رقم الجوال', '')).strip()
+                
                 # إنشاء قاموس البيانات للطلب
                 order_dict = {
-                    'العنوان': address,
+                    'عنوان العميل': address,
                     'المدينة': city,
-                    'رقم الطلبية': str(row.get('رقم الطلبية', '')),
-                    'رقم المستلم': str(row.get('رقم المستلم', '')),
-                    'اسم المستلم': str(row.get('اسم المستلم', '')),
+                    'رقم الطلب': str(row.get('رقم الطلب', '')),
+                    'رقم الجوال': recipient_phone,  # الأولوية لجوال المستلم
+                    'اسم العميل': recipient_name,   # الأولوية لاسم المستلم الثاني
                     'الرمز البريدي': str(row.get('الرمز البريدي', '')),
                     'رقم الشارع': str(row.get('رقم الشارع', '')),
                     'معرف الحي': str(row.get('معرف الحي', '')),
@@ -530,10 +540,10 @@ def webhook():
                         riyadh_texts = []
                         for order in riyadh_orders:
                             text = (
-                                f"**العنوان /** {order.get('العنوان', '')}\n"
-                                f"**رقم الطلبية /** {order.get('رقم الطلبية', '')}\n"
-                                f"**رقم المستلم /** {order.get('رقم المستلم', '')}\n"
-                                f"**اسم المستلم /** {order.get('اسم المستلم', '')}"
+                                f"**العنوان /** {order.get('عنوان العميل', '')}\n"
+                                f"**رقم الطلبية /** {order.get('رقم الطلب', '')}\n"
+                                f"**رقم المستلم /** {order.get('رقم الجوال', '')}\n"
+                                f"**اسم المستلم /** {order.get('اسم العميل', '')}"
                             )
                             riyadh_texts.append(text)
                         threading.Thread(target=send_orders_as_messages, args=(sender_id, riyadh_texts, "الرياض")).start()
@@ -545,10 +555,10 @@ def webhook():
                         other_texts = []
                         for order in other_orders:
                             text = (
-                                f"**العنوان /** {order.get('العنوان', '')}\n"
-                                f"**رقم الطلبية /** {order.get('رقم الطلبية', '')}\n"
-                                f"**رقم المستلم /** {order.get('رقم المستلم', '')}\n"
-                                f"**اسم المستلم /** {order.get('اسم المستلم', '')}"
+                                f"**العنوان /** {order.get('عنوان العميل', '')}\n"
+                                f"**رقم الطلبية /** {order.get('رقم الطلب', '')}\n"
+                                f"**رقم المستلم /** {order.get('رقم الجوال', '')}\n"
+                                f"**اسم المستلم /** {order.get('اسم العميل', '')}"
                             )
                             other_texts.append(text)
                         threading.Thread(target=send_orders_as_messages, args=(sender_id, other_texts, "باقي المناطق")).start()
