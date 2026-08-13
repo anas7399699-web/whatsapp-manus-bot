@@ -1,51 +1,96 @@
-# التحديث الأخير: 2026-08-13 - إضافة أعمدة إضافية مع الأولوية لبيانات المستلم
+# التحديث الأخير: 2026-08-13 - إضافة أعمدة جديدة إلى ملفات Excel
 import os
 import requests
 import time
 import threading
 import tempfile
 import re
-import fitz
+import fitz  # PyMuPDF لقراءة PDF
 from PIL import Image
 from flask import Flask, request, jsonify
 from process_orders import process_excel_orders_to_list
 import pandas as pd
+import logging
+from datetime import datetime
+
+# ==================== إعدادات التسجيل (Logging) ====================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# ==================== إعدادات Render ====================
 ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN')
 PHONE_NUMBER_ID = os.environ.get('PHONE_NUMBER_ID')
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 
+# ==================== الذواكر المؤقتة ====================
 processed_messages = set()
 processed_salla_orders = set()
 user_temp_data = {}
 user_temp_expiry = {}
 
+# ==================== إعدادات إضافية ====================
 salla_lock = threading.Lock()
 MY_WHATSAPP_NUMBER = "967739969981"
+MAX_RETRIES = 3
+RETRY_DELAY = 5
 
+# ==================== دوال واتساب الأساسية ====================
+
+def safe_send_message(to, text, retries=MAX_RETRIES):
+    """إرسال رسالة مع إعادة المحاولة في حالة الفشل"""
+    for attempt in range(retries):
+        try:
+            send_whatsapp_message(to, text)
+            return True
+        except Exception as e:
+            logger.error(f"خطأ في إرسال الرسالة (محاولة {attempt+1}/{retries}): {str(e)}")
+            if attempt < retries - 1:
+                time.sleep(RETRY_DELAY)
+    return False
 
 def send_whatsapp_message(to, text):
+    """إرسال رسالة نصية عبر واتساب"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
-    requests.post(url, headers=headers, json=data)
-
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        if response.status_code != 200:
+            logger.error(f"فشل إرسال الرسالة: {response.status_code} - {response.text}")
+        return response
+    except Exception as e:
+        logger.error(f"خطأ في إرسال الرسالة: {str(e)}")
+        raise
 
 def upload_whatsapp_media(file_path, mime_type):
+    """رفع ملف إلى واتساب"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/media"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
     files = {'file': (os.path.basename(file_path), open(file_path, 'rb'), mime_type)}
     data = {'messaging_product': 'whatsapp'}
     try:
-        response = requests.post(url, headers=headers, files=files, data=data)
-        return response.json().get('id')
-    except:
+        response = requests.post(url, headers=headers, files=files, data=data, timeout=60)
+        if response.status_code == 200:
+            return response.json().get('id')
+        else:
+            logger.error(f"فشل رفع الملف: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        logger.error(f"خطأ في رفع الملف: {str(e)}")
         return None
 
-
 def send_whatsapp_image_with_caption(to, media_id, caption):
+    """إرسال صورة مع تعليق عبر واتساب"""
     url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
     data = {
@@ -54,178 +99,124 @@ def send_whatsapp_image_with_caption(to, media_id, caption):
         "type": "image",
         "image": {"id": media_id, "caption": caption}
     }
-    requests.post(url, headers=headers, json=data)
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        return response
+    except Exception as e:
+        logger.error(f"خطأ في إرسال الصورة: {str(e)}")
+        raise
 
+# ==================== معالجة ملفات PDF ====================
 
 def handle_pdf_logic(sender_id, media_content):
+    """استخراج بوالص الشحن من ملف PDF وتحويلها إلى صور"""
     try:
         doc = fitz.open(stream=media_content, filetype="pdf")
-        send_whatsapp_message(sender_id, f"📄 جاري استخراج {len(doc)} بوالص شحن... ⏳")
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            text = page.get_text()
-            order_match = re.search(r'\b(2\d{8})\b', text)
-            order_number = order_match.group(1) if order_match else "غير محدد"
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_img:
-                pix.save(tmp_img.name)
-                image_id = upload_whatsapp_media(tmp_img.name, "image/png")
-                if image_id:
-                    send_whatsapp_image_with_caption(sender_id, image_id, f"📦 رقم الطلب: {order_number}")
-                os.remove(tmp_img.name)
-        send_whatsapp_message(sender_id, "✅ تم إرسال جميع البوالص بنجاح.")
+        total_pages = len(doc)
+        safe_send_message(sender_id, f"📄 جاري استخراج {total_pages} بوالص شحن... ⏳")
+        
+        success_count = 0
+        for page_num in range(total_pages):
+            try:
+                page = doc.load_page(page_num)
+                text = page.get_text()
+                order_match = re.search(r'\b(2\d{8})\b', text)
+                order_number = order_match.group(1) if order_match else "غير محدد"
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_img:
+                    pix.save(tmp_img.name)
+                    image_id = upload_whatsapp_media(tmp_img.name, "image/png")
+                    if image_id:
+                        send_whatsapp_image_with_caption(sender_id, image_id, f"📦 رقم الطلب: {order_number}")
+                        success_count += 1
+                    os.remove(tmp_img.name)
+                
+                if page_num < total_pages - 1:
+                    time.sleep(1)
+                    
+            except Exception as e:
+                logger.error(f"خطأ في معالجة الصفحة {page_num+1}: {str(e)}")
+                safe_send_message(sender_id, f"⚠️ خطأ في الصفحة {page_num+1}: {str(e)[:50]}")
+        
+        safe_send_message(sender_id, f"✅ تم إرسال {success_count} من {total_pages} بوالص بنجاح.")
     except Exception as e:
-        print(f"PDF Error: {str(e)}")
-        send_whatsapp_message(sender_id, "❌ حدث خطأ في معالجة ملف البوالص.")
+        logger.error(f"خطأ عام في PDF: {str(e)}")
+        safe_send_message(sender_id, "❌ حدث خطأ في معالجة ملف البوالص.")
 
+# ==================== معالجة Excel (الرسائل المنفصلة) ====================
 
 def send_orders_as_messages(sender_id, orders, region_name):
+    """إرسال الطلبات كرسائل منفصلة - تبقى كما هي بدون الأعمدة الجديدة"""
     if not orders:
-        send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
+        safe_send_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
-    send_whatsapp_message(sender_id, f"📍 *{region_name}:*")
+    
+    safe_send_message(sender_id, f"📍 *{region_name}:*")
     time.sleep(2)
+    
     for index, order in enumerate(orders):
-        send_whatsapp_message(sender_id, order)
-        time.sleep(2)
-        if (index + 1) % 10 == 0:
-            send_whatsapp_message(sender_id, f"⏳ تم إرسال {index + 1} من {len(orders)}...")
-            time.sleep(6)
-    send_whatsapp_message(sender_id, f"✅ تم إرسال {len(orders)} طلب لـ {region_name}")
+        try:
+            # order هنا هو النص المستخرج (رسالة نصية)
+            safe_send_message(sender_id, order)
+            time.sleep(2)
+            if (index + 1) % 10 == 0:
+                safe_send_message(sender_id, f"⏳ تم إرسال {index + 1} من {len(orders)}...")
+                time.sleep(6)
+        except Exception as e:
+            logger.error(f"خطأ في إرسال الطلب {index+1}: {str(e)}")
+    
+    safe_send_message(sender_id, f"✅ تم إرسال {len(orders)} طلب لـ {region_name}")
 
+# ==================== معالجة Excel (ملف Excel مع الأعمدة الجديدة) ====================
 
-def extract_data_from_messages(orders):
-    orders_data = []
-    for order_msg in orders:
-        order_dict = {
-            'العنوان': '',
-            'المدينة': '',
-            'رقم الطلبية': '',
-            'رقم المستلم': '',
-            'اسم المستلم': ''
-        }
-        lines = order_msg.split('\n')
-        for line in lines:
-            if 'العنوان /' in line:
-                full_address = line.split('العنوان /')[1].strip()
-                if ' - ' in full_address:
-                    parts = full_address.split(' - ', 1)
-                    city = parts[0].strip()
-                    clean_address = parts[1].strip() if len(parts) > 1 else full_address
-                else:
-                    city = ''
-                    clean_address = full_address
-                order_dict['العنوان'] = clean_address
-                order_dict['المدينة'] = city
-            elif 'رقم الطلبية /' in line:
-                order_dict['رقم الطلبية'] = line.split('رقم الطلبية /')[1].strip()
-            elif 'رقم الطلبية/' in line:
-                order_dict['رقم الطلبية'] = line.split('رقم الطلبية/')[1].strip()
-            elif 'رقم المستلم /' in line:
-                order_dict['رقم المستلم'] = line.split('رقم المستلم /')[1].strip()
-            elif 'اسم المستلم /' in line:
-                order_dict['اسم المستلم'] = line.split('اسم المستلم /')[1].strip()
-            elif 'اسم المستلم/' in line:
-                order_dict['اسم المستلم'] = line.split('اسم المستلم/')[1].strip()
-        orders_data.append(order_dict)
-    return pd.DataFrame(orders_data)
-
-
-def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None):
+def send_orders_as_excel(sender_id, orders_data, region_name):
     """
-    إرسال الطلبات كملف Excel مع تصفية حسب المنطقة من الملف الأصلي
+    إرسال الطلبات كملف Excel مع الأعمدة الجديدة
+    orders_data: قائمة من القواميس تحتوي على جميع البيانات
     """
-    if not orders:
-        send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
+    if not orders_data:
+        safe_send_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
-
+    
     try:
-        # إذا كان لدينا مسار الملف الأصلي
-        if original_file_path and os.path.exists(original_file_path):
-            # قراءة الملف الأصلي
-            df_original = pd.read_excel(original_file_path)
-            
-            # البحث عن عمود المنطقة
-            region_column = None
-            possible_columns = ['المنطقة', 'المدينة', 'city', 'City', 'region', 'Region', 'المحافظة']
-            for col in possible_columns:
-                if col in df_original.columns:
-                    region_column = col
-                    print(f"✅ تم العثور على عمود المنطقة: '{region_column}'")
-                    break
-            
-            if region_column:
-                # تصفية حسب المنطقة من الملف الأصلي
-                if region_name == "الرياض":
-                    df_filtered = df_original[df_original[region_column].astype(str).str.contains('الرياض', case=False, na=False)]
-                    print(f"🔍 تم تصفية الرياض: {len(df_filtered)} طلب")
-                elif region_name == "باقي المناطق":
-                    df_filtered = df_original[~df_original[region_column].astype(str).str.contains('الرياض', case=False, na=False)]
-                    print(f"🔍 تم تصفية باقي المناطق: {len(df_filtered)} طلب")
-                else:  # "جميع الطلبات"
-                    df_filtered = df_original
-                    print(f"🔍 جميع الطلبات: {len(df_filtered)} طلب")
-                
-                # إذا لم يتم العثور على طلبات، نستخدم الطريقة القديمة
-                if len(df_filtered) == 0:
-                    print(f"⚠️ لم يتم العثور على طلبات في {region_name} باستخدام عمود '{region_column}'")
-                    # استخدام الطريقة القديمة للتصفية من رسائل الطلب
-                    if region_name == "الرياض":
-                        filtered_orders = [order for order in orders if "الرياض" in order]
-                    elif region_name == "باقي المناطق":
-                        filtered_orders = [order for order in orders if "الرياض" not in order]
-                    else:
-                        filtered_orders = orders
-                    
-                    if not filtered_orders:
-                        send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
-                        return
-                    
-                    df_filtered = extract_data_from_messages(filtered_orders)
-            else:
-                # إذا لم يوجد عمود المنطقة، نستخدم رسائل الطلب للتصفية
-                print("⚠️ لم يتم العثور على عمود المنطقة، نستخدم رسائل الطلب للتصفية")
-                if region_name == "الرياض":
-                    filtered_orders = [order for order in orders if "الرياض" in order]
-                elif region_name == "باقي المناطق":
-                    filtered_orders = [order for order in orders if "الرياض" not in order]
-                else:
-                    filtered_orders = orders
-                
-                if not filtered_orders:
-                    send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
-                    return
-                
-                df_filtered = extract_data_from_messages(filtered_orders)
-            
-            # إذا كانت النتيجة فارغة، نستخدم الطريقة القديمة
-            if len(df_filtered) == 0:
-                print("⚠️ النتيجة فارغة، نستخدم الطريقة القديمة")
-                df_filtered = extract_data_from_messages(orders)
-                
-        else:
-            # الطريقة القديمة (بدون ملف أصلي)
-            print("⚠️ لا يوجد ملف أصلي، نستخدم رسائل الطلب للتصفية")
-            if region_name == "الرياض":
-                filtered_orders = [order for order in orders if "الرياض" in order]
-            elif region_name == "باقي المناطق":
-                filtered_orders = [order for order in orders if "الرياض" not in order]
-            else:
-                filtered_orders = orders
-            
-            if not filtered_orders:
-                send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
-                return
-            
-            df_filtered = extract_data_from_messages(filtered_orders)
+        # إنشاء DataFrame من البيانات
+        df = pd.DataFrame(orders_data)
         
-        # حفظ الملف
+        # تحديد ترتيب الأعمدة المطلوب
+        columns_order = [
+            'العنوان',
+            'المدينة',
+            'رقم الطلبية',
+            'رقم المستلم',
+            'اسم المستلم',
+            'الرمز البريدي',
+            'رقم الشارع',
+            'معرف الحي',
+            'العنوان الوطني المختصر',
+            'رقم المبنى',
+            'الرقم الإضافي'
+        ]
+        
+        # التأكد من وجود جميع الأعمدة، وإضافة الأعمدة المفقودة كقيم فارغة
+        for col in columns_order:
+            if col not in df.columns:
+                df[col] = ''
+        
+        # ترتيب الأعمدة
+        df = df[columns_order]
+        
+        # إنشاء ملف Excel مؤقت
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             output_path = tmp.name
-            df_filtered.to_excel(output_path, index=False, sheet_name=region_name)
-
-        media_id = upload_whatsapp_media(output_path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
+            df.to_excel(output_path, index=False, sheet_name=region_name)
+        
+        # رفع الملف إلى واتساب
+        media_id = upload_whatsapp_media(
+            output_path,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
         if media_id:
             url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
             headers = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
@@ -235,125 +226,200 @@ def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None
                 "type": "document",
                 "document": {
                     "id": media_id,
-                    "caption": f"📊 طلبات {region_name}\n📦 إجمالي الطلبات: {len(df_filtered)}",
-                    "filename": f"{region_name}_{len(df_filtered)}_طلب.xlsx"
+                    "caption": f"📊 طلبات {region_name}\n📦 إجمالي الطلبات: {len(orders_data)}",
+                    "filename": f"{region_name}_{len(orders_data)}_طلب.xlsx"
                 }
             }
-            requests.post(url, headers=headers, json=data)
-            send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}\nعدد الطلبات: {len(df_filtered)}")
+            response = requests.post(url, headers=headers, json=data, timeout=30)
+            if response.status_code == 200:
+                safe_send_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}\nعدد الطلبات: {len(orders_data)}")
+            else:
+                logger.error(f"فشل إرسال ملف Excel: {response.text}")
+                safe_send_message(sender_id, f"❌ فشل في إرسال ملف {region_name}")
         else:
-            send_whatsapp_message(sender_id, f"❌ فشل في إرسال ملف {region_name}")
-
+            safe_send_message(sender_id, f"❌ فشل في رفع ملف {region_name}")
+        
         os.remove(output_path)
-
+        
     except Exception as e:
-        send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
-        print(f"Excel error: {str(e)}")
+        logger.error(f"خطأ في معالجة Excel: {str(e)}")
+        safe_send_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
 
+# ==================== معالجة ملف Excel الرئيسية ====================
 
 def handle_document_async(sender_id, doc):
+    """معالجة الملفات المرسلة عبر واتساب (Excel أو PDF)"""
     mime_type = doc.get('mime_type', '')
     filename = doc.get('filename', '').lower()
     media_id = doc.get('id')
+    
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-    res = requests.get(f"https://graph.facebook.com/v18.0/{media_id}", headers=headers).json()
-    media_url = res.get('url')
-    if not media_url:
+    
+    try:
+        res = requests.get(f"https://graph.facebook.com/v18.0/{media_id}", headers=headers, timeout=30)
+        if res.status_code != 200:
+            logger.error(f"فشل الحصول على معلومات الملف: {res.text}")
+            safe_send_message(sender_id, "❌ فشل في تحميل الملف")
+            return
+        media_url = res.json().get('url')
+        if not media_url:
+            logger.error("لم يتم العثور على URL للملف")
+            safe_send_message(sender_id, "❌ فشل في الحصول على رابط الملف")
+            return
+    except Exception as e:
+        logger.error(f"خطأ في تحميل الملف: {str(e)}")
+        safe_send_message(sender_id, "❌ حدث خطأ في تحميل الملف")
         return
-    media_content = requests.get(media_url, headers=headers).content
+    
+    try:
+        media_content = requests.get(media_url, headers=headers, timeout=60).content
+    except Exception as e:
+        logger.error(f"خطأ في تحميل محتوى الملف: {str(e)}")
+        safe_send_message(sender_id, "❌ حدث خطأ في تحميل محتوى الملف")
+        return
 
+    # معالجة ملفات Excel
     if 'spreadsheet' in mime_type or filename.endswith(('.xlsx', '.xls')):
-        send_whatsapp_message(sender_id, "📥 جاري تحليل ملف الإكسل... ⏳")
+        safe_send_message(sender_id, "📥 جاري تحليل ملف الإكسل... ⏳")
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             tmp.write(media_content)
             path = tmp.name
+        
         try:
-            result = process_excel_orders_to_list(path)
-            if result:
-                riyadh_orders = result.get("riyadh", [])
-                other_orders = result.get("others", [])
-                user_temp_data[sender_id] = {
-                    "riyadh": riyadh_orders,
-                    "others": other_orders,
-                    "original_file_path": path
+            # قراءة ملف Excel باستخدام pandas للحصول على جميع الأعمدة
+            df_original = pd.read_excel(path)
+            
+            # استخراج البيانات مع الأعمدة الإضافية
+            riyadh_orders = []
+            other_orders = []
+            
+            # الأعمدة المطلوبة
+            required_columns = [
+                'العنوان', 'المدينة', 'رقم الطلبية', 
+                'رقم المستلم', 'اسم المستلم',
+                'الرمز البريدي', 'رقم الشارع', 'معرف الحي',
+                'العنوان الوطني المختصر', 'رقم المبنى', 'الرقم الإضافي'
+            ]
+            
+            # التأكد من وجود الأعمدة الأساسية
+            for col in required_columns:
+                if col not in df_original.columns:
+                    df_original[col] = ''  # إضافة العمود إذا كان مفقوداً
+            
+            # تصفية الطلبات حسب المدينة
+            for index, row in df_original.iterrows():
+                # استخراج المدينة من عمود المدينة أو من العنوان
+                city = str(row.get('المدينة', '')).strip()
+                address = str(row.get('العنوان', '')).strip()
+                
+                # إذا كانت المدينة فارغة، حاول استخراجها من العنوان
+                if not city and address:
+                    # محاولة استخراج المدينة من العنوان
+                    if 'الرياض' in address or 'Riyadh' in address:
+                        city = 'الرياض'
+                    elif ' - ' in address:
+                        city = address.split(' - ')[0].strip()
+                    elif '،' in address:
+                        city = address.split('،')[0].strip()
+                
+                # إنشاء قاموس البيانات للطلب
+                order_dict = {
+                    'العنوان': address,
+                    'المدينة': city,
+                    'رقم الطلبية': str(row.get('رقم الطلبية', '')),
+                    'رقم المستلم': str(row.get('رقم المستلم', '')),
+                    'اسم المستلم': str(row.get('اسم المستلم', '')),
+                    'الرمز البريدي': str(row.get('الرمز البريدي', '')),
+                    'رقم الشارع': str(row.get('رقم الشارع', '')),
+                    'معرف الحي': str(row.get('معرف الحي', '')),
+                    'العنوان الوطني المختصر': str(row.get('العنوان الوطني المختصر', '')),
+                    'رقم المبنى': str(row.get('رقم المبنى', '')),
+                    'الرقم الإضافي': str(row.get('الرقم الإضافي', ''))
                 }
-                user_temp_expiry[sender_id] = time.time() + 1800
-                options = f"📊 *نتائج التحليل:*\n"
-                options += f"📍 الرياض: {len(riyadh_orders)} طلب\n"
-                options += f"🏠 باقي المناطق: {len(other_orders)} طلب\n\n"
-                options += "*اختر طريقة الاستلام:*\n\n"
-                options += "1️⃣ أرسل 'رياض رسائل' - لاستلام طلبات الرياض كرسائل منفصلة\n"
-                options += "2️⃣ أرسل 'رياض اكسل' - لاستلام طلبات الرياض كملف Excel\n"
-                options += "3️⃣ أرسل 'باقي رسائل' - لاستلام طلبات باقي المناطق كرسائل منفصلة\n"
-                options += "4️⃣ أرسل 'باقي اكسل' - لاستلام طلبات باقي المناطق كملف Excel\n"
-                options += "5️⃣ أرسل 'الكل اكسل' - لاستلام جميع الطلبات في ملف Excel واحد\n"
-                options += "6️⃣ أرسل 'مسح' - لحذف البيانات المؤقتة"
-                send_whatsapp_message(sender_id, options)
-            else:
-                send_whatsapp_message(sender_id, "❌ لم يتم العثور على بيانات في ملف الإكسل")
+                
+                # تصنيف الطلب
+                if 'الرياض' in city or 'Riyadh' in city:
+                    riyadh_orders.append(order_dict)
+                else:
+                    other_orders.append(order_dict)
+            
+            # تخزين النتائج مع صلاحية 30 دقيقة
+            user_temp_data[sender_id] = {
+                "riyadh": riyadh_orders,
+                "others": other_orders
+            }
+            user_temp_expiry[sender_id] = time.time() + 1800
+            
+            options = f"📊 *نتائج التحليل:*\n"
+            options += f"📍 الرياض: {len(riyadh_orders)} طلب\n"
+            options += f"🏠 باقي المناطق: {len(other_orders)} طلب\n\n"
+            options += "*اختر طريقة الاستلام:*\n\n"
+            options += "1️⃣ أرسل 'رياض رسائل' - لاستلام طلبات الرياض كرسائل منفصلة\n"
+            options += "2️⃣ أرسل 'رياض اكسل' - لاستلام طلبات الرياض كملف Excel\n"
+            options += "3️⃣ أرسل 'باقي رسائل' - لاستلام طلبات باقي المناطق كرسائل منفصلة\n"
+            options += "4️⃣ أرسل 'باقي اكسل' - لاستلام طلبات باقي المناطق كملف Excel\n"
+            options += "5️⃣ أرسل 'الكل اكسل' - لاستلام جميع الطلبات في ملف Excel واحد\n"
+            options += "6️⃣ أرسل 'مسح' - لحذف البيانات المؤقتة"
+            
+            safe_send_message(sender_id, options)
+            
         except Exception as e:
-            print(f"Excel error: {str(e)}")
-            send_whatsapp_message(sender_id, f"❌ حدث خطأ: {str(e)[:100]}")
+            logger.error(f"خطأ في معالجة Excel: {str(e)}")
+            safe_send_message(sender_id, f"❌ حدث خطأ: {str(e)[:100]}")
         finally:
-            pass
+            if os.path.exists(path):
+                os.remove(path)
 
+    # معالجة ملفات PDF
     elif 'pdf' in mime_type or filename.endswith('.pdf'):
         handle_pdf_logic(sender_id, media_content)
+    else:
+        safe_send_message(sender_id, "❌ نوع الملف غير مدعوم. أرسل ملف Excel أو PDF")
 
+# ==================== دالة معالجة إشعارات سلة ====================
 
 def process_salla_webhook_async(raw_data):
+    """معالجة البيانات القادمة من سلة عند تحديث الطلب"""
     with salla_lock:
         try:
             order_id = str(
-                raw_data.get('id')
-                or raw_data.get('order_id')
-                or raw_data.get('reference_id')
+                raw_data.get('id') 
+                or raw_data.get('order_id') 
+                or raw_data.get('reference_id') 
                 or 'غير متوفر'
             )
-            order_status = raw_data.get('status', '')
-            print(f"[Salla] 🔍 الحالة المستقبلة: '{order_status}'")
 
+            order_status = raw_data.get('status', '')
+            
+            logger.info(f"[Salla] 🔍 الحالة المستقبلة للطلب {order_id}: '{order_status}'")
+            
             allowed_statuses = [
                 'جاري التوصيل', 'جاري التوصيل ', 'جاريالتوصيل',
                 'تم التنفيذ', 'تم التنفيذ ', 'تمالتنفيذ',
                 'shipped', 'completed', 'delivered',
                 'out_for_delivery', 'in_progress', 'processing'
             ]
+            
             if order_status not in allowed_statuses:
-                print(f"[Salla] ⏭️ تم تجاهل تحديث الطلب {order_id} - الحالة: '{order_status}' (غير مسموحة)")
+                logger.info(f"[Salla] ⏭️ تم تجاهل تحديث الطلب {order_id}")
                 return
+            
             if order_id in processed_salla_orders:
-                print(f"[Salla] تم تجاهل طلب مكرر: {order_id}")
+                logger.info(f"[Salla] تم تجاهل طلب مكرر: {order_id}")
                 return
             processed_salla_orders.add(order_id)
             if len(processed_salla_orders) > 1000:
                 processed_salla_orders.clear()
 
-            recipient_obj = raw_data.get('shipping_address') or raw_data.get('address') or {}
             customer_obj = raw_data.get('customer') or {}
+            recipient_name = (customer_obj.get('name') or 'غير متوفر').strip()
+            recipient_mobile = customer_obj.get('mobile') or customer_obj.get('phone') or ''
 
-            recipient_name = (
-                recipient_obj.get('name')
-                or customer_obj.get('name')
-                or 'غير متوفر'
-            ).strip()
-
-            recipient_mobile = (
-                recipient_obj.get('phone')
-                or recipient_obj.get('mobile')
-                or customer_obj.get('mobile')
-                or customer_obj.get('phone')
-                or ''
-            )
-
-            city = recipient_obj.get('city', '') or customer_obj.get('city', '')
-            district = recipient_obj.get('district', '') or customer_obj.get('district', '')
-            street = recipient_obj.get('street', '') or customer_obj.get('street', '')
-
-            if not city and not district and not street:
-                city = customer_obj.get('city', '')
-                district = customer_obj.get('district', '')
-                street = customer_obj.get('street', '')
+            address_obj = raw_data.get('shipping_address') or raw_data.get('address') or {}
+            city = address_obj.get('city', '') or raw_data.get('city', '')
+            district = address_obj.get('district', '') or raw_data.get('district', '')
+            street = address_obj.get('street', '') or raw_data.get('street', '')
 
             address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
             full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
@@ -366,7 +432,7 @@ def process_salla_webhook_async(raw_data):
             elif mobile_str.startswith('5') and len(mobile_str) == 9:
                 mobile_str = '966' + mobile_str
 
-            print(f"[Salla] ✅ سيتم إرسال إشعار للطلب {order_id} - الحالة: {order_status}")
+            logger.info(f"[Salla] ✅ سيتم إرسال إشعار للطلب {order_id}")
 
             final_msg = (
                 f"**العنوان /** {full_address}\n"
@@ -375,31 +441,45 @@ def process_salla_webhook_async(raw_data):
                 f"**اسم المستلم /** {recipient_name}"
             )
 
-            send_whatsapp_message(MY_WHATSAPP_NUMBER, final_msg)
+            safe_send_message(MY_WHATSAPP_NUMBER, final_msg)
             time.sleep(2)
-        except Exception as e:
-            print(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
 
+        except Exception as e:
+            logger.error(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
+
+# ==================== دالة منع نوم Render ====================
 
 def keep_alive():
+    """منع خدمة Render من الدخول في وضع السبات"""
     RENDER_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
     if not RENDER_URL:
+        logger.warning("RENDER_EXTERNAL_URL غير مضبوط")
         return
     while True:
         try:
             time.sleep(600)
-            requests.get(f"{RENDER_URL}/", timeout=10)
-        except:
-            pass
+            response = requests.get(f"{RENDER_URL}/", timeout=10)
+            logger.info(f"Keep-alive ping: {response.status_code}")
+        except Exception as e:
+            logger.error(f"خطأ في keep-alive: {str(e)}")
 
+# ==================== المسارات (Routes) ====================
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
     return "Bot is running", 200
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "active_sessions": len(user_temp_data)
+    }), 200
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
+    """مسار استقبال رسائل واتساب"""
     if request.method == 'GET':
         if request.args.get('hub.verify_token') == VERIFY_TOKEN:
             return request.args.get('hub.challenge'), 200
@@ -410,95 +490,119 @@ def webhook():
         msg = data['entry'][0]['changes'][0]['value']['messages'][0]
         msg_id = msg.get('id')
         sender_id = msg.get('from')
-
+        
         msg_timestamp = int(msg.get('timestamp'))
         current_time = int(time.time())
-
+        
         if (current_time - msg_timestamp) > 300:
+            logger.info(f"تجاهل رسالة قديمة من {sender_id}")
             return jsonify({"status": "ignored_old_message"}), 200
 
         if msg_id in processed_messages:
+                        logger.info(f"تجاهل رسالة مكررة من {sender_id}")
             return jsonify({"status": "duplicate"}), 200
-
+        
         processed_messages.add(msg_id)
         if len(processed_messages) > 1000:
             processed_messages.clear()
 
         if msg.get('type') == 'document':
+            logger.info(f"استلام ملف من {sender_id}")
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
-
+            
         elif msg.get('type') == 'text':
-            text_body = msg.get('text', {}).get('body', '').lower()
-
+            text_body = msg.get('text', {}).get('body', '').strip()
+            text_lower = text_body.lower()
+            
             if sender_id in user_temp_data:
                 if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
                     del user_temp_data[sender_id]
                     del user_temp_expiry[sender_id]
-                    send_whatsapp_message(sender_id, "⏰ انتهت صلاحية بيانات الطلبات. أرسل ملف Excel مرة أخرى.")
+                    safe_send_message(sender_id, "⏰ انتهت صلاحية بيانات الطلبات. أرسل ملف Excel مرة أخرى.")
                 else:
                     data_store = user_temp_data[sender_id]
                     riyadh_orders = data_store["riyadh"]
                     other_orders = data_store["others"]
-                    original_file_path = data_store.get("original_file_path")
-
+                    
                     user_temp_expiry[sender_id] = time.time() + 1800
-
-                    if "رياض رسائل" in text_body:
-                        send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
-                    elif "رياض اكسل" in text_body or "رياض excel" in text_body:
-                        send_orders_as_excel(sender_id, riyadh_orders, "الرياض", original_file_path)
-                    elif "باقي رسائل" in text_body:
-                        send_orders_as_messages(sender_id, other_orders, "باقي المناطق")
-                    elif "باقي اكسل" in text_body or "باقي excel" in text_body:
-                        send_orders_as_excel(sender_id, other_orders, "باقي المناطق", original_file_path)
-                    elif "الكل اكسل" in text_body or "الكل excel" in text_body:
+                    
+                    if "رياض رسائل" in text_lower:
+                        riyadh_texts = []
+                        for order in riyadh_orders:
+                            text = (
+                                f"**العنوان /** {order.get('العنوان', '')}\n"
+                                f"**رقم الطلبية /** {order.get('رقم الطلبية', '')}\n"
+                                f"**رقم المستلم /** {order.get('رقم المستلم', '')}\n"
+                                f"**اسم المستلم /** {order.get('اسم المستلم', '')}"
+                            )
+                            riyadh_texts.append(text)
+                        threading.Thread(target=send_orders_as_messages, args=(sender_id, riyadh_texts, "الرياض")).start()
+                        
+                    elif "رياض اكسل" in text_lower or "رياض excel" in text_lower:
+                        threading.Thread(target=send_orders_as_excel, args=(sender_id, riyadh_orders, "الرياض")).start()
+                        
+                    elif "باقي رسائل" in text_lower:
+                        other_texts = []
+                        for order in other_orders:
+                            text = (
+                                f"**العنوان /** {order.get('العنوان', '')}\n"
+                                f"**رقم الطلبية /** {order.get('رقم الطلبية', '')}\n"
+                                f"**رقم المستلم /** {order.get('رقم المستلم', '')}\n"
+                                f"**اسم المستلم /** {order.get('اسم المستلم', '')}"
+                            )
+                            other_texts.append(text)
+                        threading.Thread(target=send_orders_as_messages, args=(sender_id, other_texts, "باقي المناطق")).start()
+                        
+                    elif "باقي اكسل" in text_lower or "باقي excel" in text_lower:
+                        threading.Thread(target=send_orders_as_excel, args=(sender_id, other_orders, "باقي المناطق")).start()
+                        
+                    elif "الكل اكسل" in text_lower or "الكل excel" in text_lower:
                         all_orders = riyadh_orders + other_orders
-                        send_orders_as_excel(sender_id, all_orders, "جميع الطلبات", original_file_path)
-                    elif "مسح" in text_body or "انهاء" in text_body or "حذف" in text_body:
+                        threading.Thread(target=send_orders_as_excel, args=(sender_id, all_orders, "جميع الطلبات")).start()
+                        
+                    elif "مسح" in text_lower or "انهاء" in text_lower or "حذف" in text_lower:
                         if sender_id in user_temp_data:
                             del user_temp_data[sender_id]
                         if sender_id in user_temp_expiry:
                             del user_temp_expiry[sender_id]
-                        if original_file_path and os.path.exists(original_file_path):
-                            try:
-                                os.remove(original_file_path)
-                            except:
-                                pass
-                        send_whatsapp_message(sender_id, "✅ تم مسح بيانات الطلبات المؤقتة.")
+                        safe_send_message(sender_id, "✅ تم مسح بيانات الطلبات المؤقتة.")
                     else:
-                        send_whatsapp_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
+                        safe_send_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
             else:
-                send_whatsapp_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
-
+                safe_send_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
+            
+    except KeyError as e:
+        logger.warning(f"مفتاح مفقود في البيانات: {str(e)}")
     except Exception as e:
-        print(f"Webhook error: {str(e)}")
-
+        logger.error(f"خطأ في webhook: {str(e)}")
+        
     return jsonify({"status": "ok"}), 200
 
+# ==================== مسار سلة ====================
 
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
-    print("="*50)
-    print("🚨 تم الوصول إلى مسار /salla-webhook")
-    print(f"🚨 Method: {request.method}")
-    print(f"🚨 Headers: {dict(request.headers)}")
-    print(f"🚨 Body: {request.get_data(as_text=True)}")
-    print("="*50)
-
+    """مسار استقبال إشعارات سلة"""
+    logger.info("="*50)
+    logger.info(f"🚨 تم الوصول إلى مسار /salla-webhook")
+    logger.info(f"🚨 Method: {request.method}")
+    logger.info("="*50)
+    
     if request.method == 'GET':
-        print("Salla webhook verification test received via GET.")
+        logger.info("Salla webhook verification test received via GET.")
         return "Webhook is active", 200
 
     if request.method == 'POST':
         data = request.get_json(force=True, silent=True)
         if not data:
+            logger.warning("لم يتم استلام بيانات في طلب سلة")
             return jsonify({"status": "no_data"}), 400
 
         try:
             event = data.get('event', '')
             raw_data = data.get('data', {})
-
-            print(f"📢 وصل إشعار جديد من سلة! الحدث: {event}")
+            
+            logger.info(f"📢 وصل إشعار جديد من سلة! الحدث: {event}")
 
             if event in ['order.updated', 'order.status.updated']:
                 threading.Thread(
@@ -506,24 +610,18 @@ def salla_webhook():
                     args=(raw_data,)
                 ).start()
             else:
-                print(f"⚠️ تم تجاهل الحدث (ليس تحديث طلب): {event}")
+                logger.info(f"⚠️ تم تجاهل الحدث: {event}")
 
         except Exception as e:
-            print(f"Salla Webhook Route Error: {str(e)}")
-
+            logger.error(f"Salla Webhook Route Error: {str(e)}")
+            
         return jsonify({"status": "received"}), 200
 
-
-@app.route('/debug-salla', methods=['POST', 'GET'])
-def debug_salla():
-    if request.method == 'POST':
-        data = request.get_json(force=True, silent=True)
-        print(f"🔍 DEBUG - Received raw data: {data}")
-        print(f"🔍 DEBUG - Headers: {dict(request.headers)}")
-        return jsonify({"status": "debug_received"}), 200
-    return "Debug endpoint active - Send POST requests here to test", 200
-
+# ==================== تشغيل التطبيق ====================
 
 if __name__ == '__main__':
+    logger.info("🚀 بدء تشغيل بوت واتساب...")
     threading.Thread(target=keep_alive, daemon=True).start()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    port = int(os.environ.get('PORT', 5000))
+    logger.info(f"✅ البوت يعمل على المنفذ {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
