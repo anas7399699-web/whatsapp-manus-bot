@@ -494,7 +494,7 @@ def webhook():
                         send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
                     elif "رياض اكسل" in text_body or "رياض excel" in text_body:
                         send_orders_as_excel(sender_id, riyadh_orders, "الرياض", original_file_path)
-                                        elif "باقي رسائل" in text_body:
+                    elif "باقي رسائل" in text_body:
                         send_orders_as_messages(sender_id, other_orders, "باقي المناطق")
                     elif "باقي اكسل" in text_body or "باقي excel" in text_body:
                         send_orders_as_excel(sender_id, other_orders, "باقي المناطق", original_file_path)
