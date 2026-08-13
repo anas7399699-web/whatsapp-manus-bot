@@ -499,7 +499,7 @@ def webhook():
             return jsonify({"status": "ignored_old_message"}), 200
 
         if msg_id in processed_messages:
-                        logger.info(f"تجاهل رسالة مكررة من {sender_id}")
+            logger.info(f"تجاهل رسالة مكررة من {sender_id}")
             return jsonify({"status": "duplicate"}), 200
         
         processed_messages.add(msg_id)
