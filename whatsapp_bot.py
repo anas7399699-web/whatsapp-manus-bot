@@ -144,119 +144,82 @@ def extract_data_from_messages(orders):
 
 # ==================== معالجة Excel (ملف Excel مع أعمدة إضافية) ====================
 
-def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None):
-    """
-    إرسال الطلبات كملف Excel مع الاحتفاظ بجميع الأعمدة من الملف الأصلي
-    مع الأولوية لبيانات المستلم (إن وجدت) أو بيانات العميل
-    """
+def send_orders_as_excel(sender_id, orders, region_name):
+    """إرسال الطلبات كملف Excel واحد مع استخراج المدينة من العنوان"""
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
     
+    # ===== تصفية الطلبات حسب المنطقة =====
+    if region_name == "الرياض":
+        filtered_orders = [order for order in orders if "الرياض" in order]
+    elif region_name == "باقي المناطق":
+        filtered_orders = [order for order in orders if "الرياض" not in order]
+    else:  # "جميع الطلبات" أو أي اسم آخر
+        filtered_orders = orders
+    
+    if not filtered_orders:
+        send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
+        return
+    # ===== نهاية التصفية =====
+    
     try:
-        if original_file_path and os.path.exists(original_file_path):
-            # قراءة الملف الأصلي بالكامل
-            df_original = pd.read_excel(original_file_path)
+        orders_data = []
+        for order_msg in filtered_orders:
+            order_dict = {
+                'العنوان': '',
+                'المدينة': '',
+                'رقم الطلبية': '',
+                'رقم المستلم': '',
+                'اسم المستلم': ''
+            }
             
-            # قائمة الأعمدة المطلوبة في الملف المستخرج
-            required_columns = [
-                'اسم المستلم',
-                'رقم المستلم',
-                'العنوان',
-                'المدينة',
-                'الرمز البريدي',
-                'رقم الشارع',
-                'معرف الحي',
-                'العنوان الوطني المختصر',
-                'رقم المبنى',
-                'الرقم الإضافي',
-                'اسم العميل',
-                'رقم العميل'
-            ]
+            lines = order_msg.split('\n')
+            for line in lines:
+                if 'العنوان /' in line:
+                    full_address = line.split('العنوان /')[1].strip()
+                    
+                    # استخراج المدينة من العنوان
+                    if ' - ' in full_address:
+                        parts = full_address.split(' - ', 1)
+                        city = parts[0].strip()
+                        clean_address = parts[1].strip() if len(parts) > 1 else full_address
+                    elif '،' in full_address:
+                        parts = full_address.split('،', 1)
+                        city = parts[0].strip()
+                        clean_address = parts[1].strip() if len(parts) > 1 else full_address
+                    else:
+                        words = full_address.split()
+                        if words:
+                            city = words[0]
+                            clean_address = ' '.join(words[1:]) if len(words) > 1 else full_address
+                        else:
+                            city = ''
+                            clean_address = full_address
+                    
+                    order_dict['العنوان'] = clean_address
+                    order_dict['المدينة'] = city
+                    
+                elif 'رقم الطلبية /' in line:
+                    order_dict['رقم الطلبية'] = line.split('رقم الطلبية /')[1].strip()
+                elif 'رقم الطلبية/' in line:
+                    order_dict['رقم الطلبية'] = line.split('رقم الطلبية/')[1].strip()
+                elif 'رقم المستلم /' in line:
+                    order_dict['رقم المستلم'] = line.split('رقم المستلم /')[1].strip()
+                elif 'اسم المستلم /' in line:
+                    order_dict['اسم المستلم'] = line.split('اسم المستلم /')[1].strip()
+                elif 'اسم المستلم/' in line:
+                    order_dict['اسم المستلم'] = line.split('اسم المستلم/')[1].strip()
             
-            # التحقق من وجود الأعمدة في الملف الأصلي
-            available_columns = []
-            for col in required_columns:
-                if col in df_original.columns:
-                    available_columns.append(col)
-                else:
-                    print(f"⚠️ العمود '{col}' غير موجود في الملف الأصلي")
-            
-            # ===== الأولوية لبيانات المستلم =====
-            # إذا لم يكن هناك عمود 'اسم المستلم'، نستخدم 'اسم العميل'
-            if 'اسم المستلم' not in df_original.columns and 'اسم العميل' in df_original.columns:
-                df_original['اسم المستلم'] = df_original['اسم العميل']
-                if 'اسم المستلم' not in available_columns:
-                    available_columns.append('اسم المستلم')
-                print("✅ تم إنشاء عمود 'اسم المستلم' من 'اسم العميل'")
-            
-            # إذا لم يكن هناك عمود 'رقم المستلم'، نستخدم 'رقم العميل'
-            if 'رقم المستلم' not in df_original.columns and 'رقم العميل' in df_original.columns:
-                df_original['رقم المستلم'] = df_original['رقم العميل']
-                if 'رقم المستلم' not in available_columns:
-                    available_columns.append('رقم المستلم')
-                print("✅ تم إنشاء عمود 'رقم المستلم' من 'رقم العميل'")
-            
-            # إذا لم يكن هناك عمود 'اسم المستلم' ولا 'اسم العميل'
-            if 'اسم المستلم' not in df_original.columns and 'اسم العميل' not in df_original.columns:
-                print("⚠️ لا يوجد عمود لاسم المستلم أو العميل، سيتم إنشاء عمود فارغ")
-                df_original['اسم المستلم'] = 'غير محدد'
-                available_columns.append('اسم المستلم')
-            
-            # إذا لم يكن هناك عمود 'رقم المستلم' ولا 'رقم العميل'
-            if 'رقم المستلم' not in df_original.columns and 'رقم العميل' not in df_original.columns:
-                print("⚠️ لا يوجد عمود لرقم المستلم أو العميل، سيتم إنشاء عمود فارغ")
-                df_original['رقم المستلم'] = 'غير محدد'
-                available_columns.append('رقم المستلم')
-            
-            # ===== تصفية الصفوف حسب المنطقة =====
-            region_column = None
-            possible_region_columns = ['المنطقة', 'المدينة', 'city', 'City', 'region', 'Region']
-            for col in possible_region_columns:
-                if col in df_original.columns:
-                    region_column = col
-                    break
-            
-            if region_column:
-                if region_name == "الرياض":
-                    df_filtered = df_original[df_original[region_column].str.contains('الرياض', case=False, na=False)]
-                else:
-                    df_filtered = df_original[~df_original[region_column].str.contains('الرياض', case=False, na=False)]
-                
-                if len(df_filtered) == 0:
-                    print(f"⚠️ لم يتم العثور على طلبات في {region_name}")
-                    send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
-                    return
-            else:
-                print(f"⚠️ لم يتم العثور على عمود المنطقة، نستخدم جميع الصفوف")
-                df_filtered = df_original
-            
-            # ===== إزالة الأعمدة المكررة =====
-            # إذا كان هناك 'اسم المستلم' و'اسم العميل'، نحذف 'اسم العميل'
-            if 'اسم المستلم' in df_filtered.columns and 'اسم العميل' in df_filtered.columns:
-                df_filtered = df_filtered.drop(columns=['اسم العميل'])
-                if 'اسم العميل' in available_columns:
-                    available_columns.remove('اسم العميل')
-            
-            if 'رقم المستلم' in df_filtered.columns and 'رقم العميل' in df_filtered.columns:
-                df_filtered = df_filtered.drop(columns=['رقم العميل'])
-                if 'رقم العميل' in available_columns:
-                    available_columns.remove('رقم العميل')
-            
-            # تحديد الأعمدة النهائية
-            final_columns = [col for col in available_columns if col in df_filtered.columns]
-            df_filtered = df_filtered[final_columns]
-            
-        else:
-            # الطريقة القديمة (بدون ملف أصلي)
-            df_filtered = extract_data_from_messages(orders)
+            orders_data.append(order_dict)
         
-        # حفظ الملف
+        df = pd.DataFrame(orders_data)
+        df = df[['العنوان', 'المدينة', 'رقم الطلبية', 'رقم المستلم', 'اسم المستلم']]
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             output_path = tmp.name
-            df_filtered.to_excel(output_path, index=False, sheet_name=region_name)
+            df.to_excel(output_path, index=False, sheet_name=region_name)
         
-        # رفع الملف إلى واتساب
         media_id = upload_whatsapp_media(output_path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         
         if media_id:
@@ -268,20 +231,21 @@ def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None
                 "type": "document",
                 "document": {
                     "id": media_id,
-                    "caption": f"📊 طلبات {region_name}\n📦 إجمالي الطلبات: {len(df_filtered)}",
-                    "filename": f"{region_name}_{len(df_filtered)}_طلب.xlsx"
+                    "caption": f"📊 طلبات {region_name}\n📦 إجمالي الطلبات: {len(filtered_orders)}",
+                    "filename": f"{region_name}_{len(filtered_orders)}_طلب.xlsx"
                 }
             }
             requests.post(url, headers=headers, json=data)
-            send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}\nعدد الطلبات: {len(df_filtered)}")
+            send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}\nعدد الطلبات: {len(filtered_orders)}")
         else:
             send_whatsapp_message(sender_id, f"❌ فشل في إرسال ملف {region_name}")
         
         os.remove(output_path)
         
+    except ImportError:
+        send_whatsapp_message(sender_id, "❌ المكتبات المطلوبة غير موجودة (pandas, openpyxl)")
     except Exception as e:
         send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
-        print(f"Excel error: {str(e)}")
 
 
 # ==================== معالجة ملف Excel الرئيسية ====================
@@ -309,8 +273,7 @@ def handle_document_async(sender_id, doc):
                 other_orders = result.get("others", [])
                 user_temp_data[sender_id] = {
                     "riyadh": riyadh_orders,
-                    "others": other_orders,
-                    "original_file_path": path
+                    "others": other_orders
                 }
                 user_temp_expiry[sender_id] = time.time() + 1800
                 options = f"📊 *نتائج التحليل:*\n"
@@ -330,7 +293,8 @@ def handle_document_async(sender_id, doc):
             print(f"Excel error: {str(e)}")
             send_whatsapp_message(sender_id, f"❌ حدث خطأ: {str(e)[:100]}")
         finally:
-            pass
+            if os.path.exists(path):
+                os.remove(path)
 
     elif 'pdf' in mime_type or filename.endswith('.pdf'):
         handle_pdf_logic(sender_id, media_content)
@@ -341,7 +305,6 @@ def handle_document_async(sender_id, doc):
 def process_salla_webhook_async(raw_data):
     with salla_lock:
         try:
-            # استخراج رقم الطلب
             order_id = str(
                 raw_data.get('id')
                 or raw_data.get('order_id')
@@ -379,14 +342,12 @@ def process_salla_webhook_async(raw_data):
             recipient_obj = raw_data.get('shipping_address') or raw_data.get('address') or {}
             customer_obj = raw_data.get('customer') or {}
             
-            # اسم المستلم (الأولوية لـ shipping_address)
             recipient_name = (
                 recipient_obj.get('name')
                 or customer_obj.get('name')
                 or 'غير متوفر'
             ).strip()
             
-            # رقم جوال المستلم (الأولوية لـ shipping_address)
             recipient_mobile = (
                 recipient_obj.get('phone')
                 or recipient_obj.get('mobile')
@@ -395,22 +356,18 @@ def process_salla_webhook_async(raw_data):
                 or ''
             )
             
-            # عنوان المستلم (الأولوية لـ shipping_address)
             city = recipient_obj.get('city', '') or customer_obj.get('city', '')
             district = recipient_obj.get('district', '') or customer_obj.get('district', '')
             street = recipient_obj.get('street', '') or customer_obj.get('street', '')
             
-            # إذا لم توجد بيانات في shipping_address، نأخذها من customer
             if not city and not district and not street:
                 city = customer_obj.get('city', '')
                 district = customer_obj.get('district', '')
                 street = customer_obj.get('street', '')
-            # ===== نهاية استخراج بيانات المستلم =====
-
+            
             address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
             full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
 
-            # تنسيق رقم الجوال
             mobile_str = str(recipient_mobile).strip().replace(' ', '').replace('-', '')
             if mobile_str.startswith('+'):
                 mobile_str = mobile_str[1:]
@@ -421,7 +378,6 @@ def process_salla_webhook_async(raw_data):
 
             print(f"[Salla] ✅ سيتم إرسال إشعار للطلب {order_id} - الحالة: {order_status}")
 
-            # الرسالة النهائية
             final_msg = (
                 f"**العنوان /** {full_address}\n"
                 f"**رقم الطلبية /** {order_id}\n"
@@ -497,31 +453,25 @@ def webhook():
                     data_store = user_temp_data[sender_id]
                     riyadh_orders = data_store["riyadh"]
                     other_orders = data_store["others"]
-                    original_file_path = data_store.get("original_file_path")
                     
                     user_temp_expiry[sender_id] = time.time() + 1800
                     
                     if "رياض رسائل" in text_body:
                         send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
                     elif "رياض اكسل" in text_body or "رياض excel" in text_body:
-                        send_orders_as_excel(sender_id, riyadh_orders, "الرياض", original_file_path)
+                        send_orders_as_excel(sender_id, riyadh_orders, "الرياض")
                     elif "باقي رسائل" in text_body:
                         send_orders_as_messages(sender_id, other_orders, "باقي المناطق")
                     elif "باقي اكسل" in text_body or "باقي excel" in text_body:
-                        send_orders_as_excel(sender_id, other_orders, "باقي المناطق", original_file_path)
+                        send_orders_as_excel(sender_id, other_orders, "باقي المناطق")
                     elif "الكل اكسل" in text_body or "الكل excel" in text_body:
                         all_orders = riyadh_orders + other_orders
-                        send_orders_as_excel(sender_id, all_orders, "جميع الطلبات", original_file_path)
+                        send_orders_as_excel(sender_id, all_orders, "جميع الطلبات")
                     elif "مسح" in text_body or "انهاء" in text_body or "حذف" in text_body:
                         if sender_id in user_temp_data:
-                            del user_temp_data[sender_id]
+                                             del user_temp_data[sender_id]
                         if sender_id in user_temp_expiry:
                             del user_temp_expiry[sender_id]
-                        if original_file_path and os.path.exists(original_file_path):
-                            try:
-                                os.remove(original_file_path)
-                            except:
-                                pass
                         send_whatsapp_message(sender_id, "✅ تم مسح بيانات الطلبات المؤقتة.")
                     else:
                         send_whatsapp_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
@@ -538,7 +488,6 @@ def webhook():
 
 @app.route('/salla-webhook', methods=['GET', 'POST'])
 def salla_webhook():
-    """مسار استقبال إشعارات سلة - مع كود تشخيصي"""
     print("="*50)
     print("🚨 تم الوصول إلى مسار /salla-webhook")
     print(f"🚨 Method: {request.method}")
@@ -577,7 +526,6 @@ def salla_webhook():
 
 @app.route('/debug-salla', methods=['POST', 'GET'])
 def debug_salla():
-    """مسار تشخيصي لاختبار إرساليات سلة"""
     if request.method == 'POST':
         data = request.get_json(force=True, silent=True)
         print(f"🔍 DEBUG - Received raw data: {data}")
