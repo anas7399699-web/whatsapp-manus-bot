@@ -1,4 +1,4 @@
-# التحديث الأخير: 2026-07-28 - إضافة دعم للحالات المختلفة
+# التحديث الأخير: 2026-08-13 - إضافة أعمدة إضافية إلى ملف Excel المستخرج
 import os
 import requests
 import time
@@ -114,71 +114,119 @@ def send_orders_as_messages(sender_id, orders, region_name):
     send_whatsapp_message(sender_id, f"✅ تم إرسال {len(orders)} طلب لـ {region_name}")
 
 
-# ==================== معالجة Excel (ملف Excel مع عمود المدينة) ====================
+# ==================== استخراج البيانات من رسائل الطلب ====================
 
-def send_orders_as_excel(sender_id, orders, region_name):
-    """إرسال الطلبات كملف Excel واحد مع استخراج المدينة من العنوان"""
+def extract_data_from_messages(orders):
+    """
+    استخراج البيانات من رسائل الطلب (الطريقة القديمة)
+    """
+    orders_data = []
+    for order_msg in orders:
+        order_dict = {
+            'العنوان': '',
+            'المدينة': '',
+            'رقم الطلبية': '',
+            'رقم المستلم': '',
+            'اسم المستلم': ''
+        }
+        
+        lines = order_msg.split('\n')
+        for line in lines:
+            if 'العنوان /' in line:
+                full_address = line.split('العنوان /')[1].strip()
+                if ' - ' in full_address:
+                    parts = full_address.split(' - ', 1)
+                    city = parts[0].strip()
+                    clean_address = parts[1].strip() if len(parts) > 1 else full_address
+                else:
+                    city = ''
+                    clean_address = full_address
+                order_dict['العنوان'] = clean_address
+                order_dict['المدينة'] = city
+            elif 'رقم الطلبية /' in line:
+                order_dict['رقم الطلبية'] = line.split('رقم الطلبية /')[1].strip()
+            elif 'رقم الطلبية/' in line:
+                order_dict['رقم الطلبية'] = line.split('رقم الطلبية/')[1].strip()
+            elif 'رقم المستلم /' in line:
+                order_dict['رقم المستلم'] = line.split('رقم المستلم /')[1].strip()
+            elif 'اسم المستلم /' in line:
+                order_dict['اسم المستلم'] = line.split('اسم المستلم /')[1].strip()
+            elif 'اسم المستلم/' in line:
+                order_dict['اسم المستلم'] = line.split('اسم المستلم/')[1].strip()
+        
+        orders_data.append(order_dict)
+    
+    return pd.DataFrame(orders_data)
+
+
+# ==================== معالجة Excel (ملف Excel مع أعمدة إضافية) ====================
+
+def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None):
+    """
+    إرسال الطلبات كملف Excel واحد مع استخراج المدينة من العنوان
+    مع الاحتفاظ بجميع الأعمدة المطلوبة من الملف الأصلي
+    """
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
     
     try:
-        orders_data = []
-        for order_msg in orders:
-            order_dict = {
-                'العنوان': '',
-                'المدينة': '',
-                'رقم الطلبية': '',
-                'رقم المستلم': '',
-                'اسم المستلم': ''
-            }
+        # إذا كان لدينا مسار الملف الأصلي، نقرأه مباشرة
+        if original_file_path and os.path.exists(original_file_path):
+            # قراءة الملف الأصلي
+            df_original = pd.read_excel(original_file_path)
             
-            lines = order_msg.split('\n')
-            for line in lines:
-                if 'العنوان /' in line:
-                    full_address = line.split('العنوان /')[1].strip()
-                    
-                    # استخراج المدينة من العنوان
-                    if ' - ' in full_address:
-                        parts = full_address.split(' - ', 1)
-                        city = parts[0].strip()
-                        clean_address = parts[1].strip() if len(parts) > 1 else full_address
-                    elif '،' in full_address:
-                        parts = full_address.split('،', 1)
-                        city = parts[0].strip()
-                        clean_address = parts[1].strip() if len(parts) > 1 else full_address
-                    else:
-                        words = full_address.split()
-                        if words:
-                            city = words[0]
-                            clean_address = ' '.join(words[1:]) if len(words) > 1 else full_address
-                        else:
-                            city = ''
-                            clean_address = full_address
-                    
-                    order_dict['العنوان'] = clean_address
-                    order_dict['المدينة'] = city
-                    
-                elif 'رقم الطلبية /' in line:
-                    order_dict['رقم الطلبية'] = line.split('رقم الطلبية /')[1].strip()
-                elif 'رقم الطلبية/' in line:
-                    order_dict['رقم الطلبية'] = line.split('رقم الطلبية/')[1].strip()
-                elif 'رقم المستلم /' in line:
-                    order_dict['رقم المستلم'] = line.split('رقم المستلم /')[1].strip()
-                elif 'اسم المستلم /' in line:
-                    order_dict['اسم المستلم'] = line.split('اسم المستلم /')[1].strip()
-                elif 'اسم المستلم/' in line:
-                    order_dict['اسم المستلم'] = line.split('اسم المستلم/')[1].strip()
+            # قائمة الأعمدة المطلوبة من الملف الأصلي
+            required_columns = [
+                'الرمز البريدي',
+                'رقم الشارع',
+                'معرف الحي',
+                'العنوان الوطني المختصر',
+                'رقم المبنى',
+                'الرقم الإضافي'
+            ]
             
-            orders_data.append(order_dict)
+            # التحقق من وجود الأعمدة في الملف الأصلي
+            available_columns = []
+            for col in required_columns:
+                if col in df_original.columns:
+                    available_columns.append(col)
+                else:
+                    print(f"⚠️ العمود '{col}' غير موجود في الملف الأصلي")
+            
+            # استخراج البيانات الأساسية من رسائل الطلب
+            df_messages = extract_data_from_messages(orders)
+            
+            # إضافة الأعمدة الإضافية من الملف الأصلي
+            for col in available_columns:
+                if len(df_original) >= len(df_messages):
+                    df_messages[col] = df_original[col].iloc[:len(df_messages)].values
+                else:
+                    df_messages[col] = df_original[col].iloc[:len(df_messages)].values
+            
+            # تحديد ترتيب الأعمدة
+            columns_order = [
+                'العنوان',
+                'المدينة',
+                'رقم الطلبية',
+                'رقم المستلم',
+                'اسم المستلم'
+            ] + available_columns
+            
+            # التأكد من وجود جميع الأعمدة
+            final_columns = [col for col in columns_order if col in df_messages.columns]
+            df_filtered = df_messages[final_columns]
+            
+        else:
+            # الطريقة القديمة (بدون أعمدة إضافية)
+            df_filtered = extract_data_from_messages(orders)
         
-        df = pd.DataFrame(orders_data)
-        df = df[['العنوان', 'المدينة', 'رقم الطلبية', 'رقم المستلم', 'اسم المستلم']]
-        
+        # حفظ الملف
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             output_path = tmp.name
-            df.to_excel(output_path, index=False, sheet_name=region_name)
+            df_filtered.to_excel(output_path, index=False, sheet_name=region_name)
         
+        # رفع الملف إلى واتساب
         media_id = upload_whatsapp_media(output_path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         
         if media_id:
@@ -190,21 +238,20 @@ def send_orders_as_excel(sender_id, orders, region_name):
                 "type": "document",
                 "document": {
                     "id": media_id,
-                    "caption": f"📊 طلبات {region_name}\n📦 إجمالي الطلبات: {len(orders)}",
-                    "filename": f"{region_name}_{len(orders)}_طلب.xlsx"
+                    "caption": f"📊 طلبات {region_name}\n📦 إجمالي الطلبات: {len(df_filtered)}",
+                    "filename": f"{region_name}_{len(df_filtered)}_طلب.xlsx"
                 }
             }
             requests.post(url, headers=headers, json=data)
-            send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}\nعدد الطلبات: {len(orders)}")
+            send_whatsapp_message(sender_id, f"✅ تم إرسال ملف Excel لـ {region_name}\nعدد الطلبات: {len(df_filtered)}")
         else:
             send_whatsapp_message(sender_id, f"❌ فشل في إرسال ملف {region_name}")
         
         os.remove(output_path)
         
-    except ImportError:
-        send_whatsapp_message(sender_id, "❌ المكتبات المطلوبة غير موجودة (pandas, openpyxl)")
     except Exception as e:
         send_whatsapp_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
+        print(f"Excel error: {str(e)}")
 
 
 # ==================== معالجة ملف Excel الرئيسية ====================
@@ -238,10 +285,11 @@ def handle_document_async(sender_id, doc):
                 riyadh_orders = result.get("riyadh", [])
                 other_orders = result.get("others", [])
                 
-                # تخزين النتائج مع صلاحية 30 دقيقة
+                # تخزين النتائج مع صلاحية 30 دقيقة ومسار الملف الأصلي
                 user_temp_data[sender_id] = {
                     "riyadh": riyadh_orders,
-                    "others": other_orders
+                    "others": other_orders,
+                    "original_file_path": path  # حفظ مسار الملف الأصلي
                 }
                 user_temp_expiry[sender_id] = time.time() + 1800  # 30 دقيقة
                 
@@ -265,8 +313,9 @@ def handle_document_async(sender_id, doc):
             print(f"Excel error: {str(e)}")
             send_whatsapp_message(sender_id, f"❌ حدث خطأ: {str(e)[:100]}")
         finally:
-            if os.path.exists(path):
-                os.remove(path)
+            # لا نحذف الملف هنا لأننا سنحتاجه لاحقاً لإضافة الأعمدة الإضافية
+            # سيتم حذفه في دالة send_orders_as_excel بعد الاستخدام
+            pass
 
     # معالجة ملفات PDF
     elif 'pdf' in mime_type or filename.endswith('.pdf'):
@@ -434,6 +483,7 @@ def webhook():
                     data_store = user_temp_data[sender_id]
                     riyadh_orders = data_store["riyadh"]
                     other_orders = data_store["others"]
+                    original_file_path = data_store.get("original_file_path")
                     
                     # لا نحذف البيانات بعد التنفيذ
                     
@@ -443,20 +493,26 @@ def webhook():
                     if "رياض رسائل" in text_body:
                         send_orders_as_messages(sender_id, riyadh_orders, "الرياض")
                     elif "رياض اكسل" in text_body or "رياض excel" in text_body:
-                        send_orders_as_excel(sender_id, riyadh_orders, "الرياض")
-                    elif "باقي رسائل" in text_body:
+                        send_orders_as_excel(sender_id, riyadh_orders, "الرياض", original_file_path)
+                                        elif "باقي رسائل" in text_body:
                         send_orders_as_messages(sender_id, other_orders, "باقي المناطق")
                     elif "باقي اكسل" in text_body or "باقي excel" in text_body:
-                        send_orders_as_excel(sender_id, other_orders, "باقي المناطق")
+                        send_orders_as_excel(sender_id, other_orders, "باقي المناطق", original_file_path)
                     elif "الكل اكسل" in text_body or "الكل excel" in text_body:
                         all_orders = riyadh_orders + other_orders
-                        send_orders_as_excel(sender_id, all_orders, "جميع الطلبات")
+                        send_orders_as_excel(sender_id, all_orders, "جميع الطلبات", original_file_path)
                     elif "مسح" in text_body or "انهاء" in text_body or "حذف" in text_body:
                         # حذف البيانات يدوياً
                         if sender_id in user_temp_data:
                             del user_temp_data[sender_id]
                         if sender_id in user_temp_expiry:
                             del user_temp_expiry[sender_id]
+                        # حذف الملف الأصلي إذا كان موجوداً
+                        if original_file_path and os.path.exists(original_file_path):
+                            try:
+                                os.remove(original_file_path)
+                            except:
+                                pass
                         send_whatsapp_message(sender_id, "✅ تم مسح بيانات الطلبات المؤقتة.")
                     else:
                         send_whatsapp_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
