@@ -132,131 +132,77 @@ def extract_data_from_messages(orders):
 
 
 def send_orders_as_excel(sender_id, orders, region_name, original_file_path=None):
+    """
+    إرسال الطلبات كملف Excel مع تصفية حسب المنطقة من الملف الأصلي
+    """
     if not orders:
         send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
 
     try:
-        if region_name == "الرياض":
-            filtered_orders = [order for order in orders if "الرياض" in order]
-        elif region_name == "باقي المناطق":
-            filtered_orders = [order for order in orders if "الرياض" not in order]
-        else:
-            filtered_orders = orders
-
-        if not filtered_orders:
-            send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
-            return
-
+        # إذا كان لدينا مسار الملف الأصلي
         if original_file_path and os.path.exists(original_file_path):
+            # قراءة الملف الأصلي
             df_original = pd.read_excel(original_file_path)
-
-            required_columns = [
-                'اسم المستلم', 'رقم المستلم', 'العنوان', 'المدينة',
-                'الرمز البريدي', 'رقم الشارع', 'معرف الحي',
-                'العنوان الوطني المختصر', 'رقم المبنى', 'الرقم الإضافي',
-                'اسم العميل', 'رقم العميل'
-            ]
-
-            available_columns = []
-            for col in required_columns:
-                if col in df_original.columns:
-                    available_columns.append(col)
-                else:
-                    print(f"⚠️ العمود '{col}' غير موجود في الملف الأصلي")
-
-            if 'اسم المستلم' not in df_original.columns and 'اسم العميل' in df_original.columns:
-                df_original['اسم المستلم'] = df_original['اسم العميل']
-                if 'اسم المستلم' not in available_columns:
-                    available_columns.append('اسم المستلم')
-                print("✅ تم إنشاء عمود 'اسم المستلم' من 'اسم العميل'")
-
-            if 'رقم المستلم' not in df_original.columns and 'رقم العميل' in df_original.columns:
-                df_original['رقم المستلم'] = df_original['رقم العميل']
-                if 'رقم المستلم' not in available_columns:
-                    available_columns.append('رقم المستلم')
-                print("✅ تم إنشاء عمود 'رقم المستلم' من 'رقم العميل'")
-
-            if 'اسم المستلم' not in df_original.columns and 'اسم العميل' not in df_original.columns:
-                print("⚠️ لا يوجد عمود لاسم المستلم أو العميل، سيتم إنشاء عمود فارغ")
-                df_original['اسم المستلم'] = 'غير محدد'
-                available_columns.append('اسم المستلم')
-
-            if 'رقم المستلم' not in df_original.columns and 'رقم العميل' not in df_original.columns:
-                print("⚠️ لا يوجد عمود لرقم المستلم أو العميل، سيتم إنشاء عمود فارغ")
-                df_original['رقم المستلم'] = 'غير محدد'
-                available_columns.append('رقم المستلم')
-
+            
+            # البحث عن عمود المنطقة
             region_column = None
-            possible_region_columns = ['المنطقة', 'المدينة', 'city', 'City', 'region', 'Region']
-            for col in possible_region_columns:
+            possible_columns = ['المنطقة', 'المدينة', 'city', 'City', 'region', 'Region', 'المحافظة']
+            for col in possible_columns:
                 if col in df_original.columns:
                     region_column = col
                     break
-
+            
             if region_column:
+                # تصفية حسب المنطقة من الملف الأصلي
                 if region_name == "الرياض":
                     df_filtered = df_original[df_original[region_column].str.contains('الرياض', case=False, na=False)]
-                else:
+                elif region_name == "باقي المناطق":
                     df_filtered = df_original[~df_original[region_column].str.contains('الرياض', case=False, na=False)]
-
+                else:  # "جميع الطلبات"
+                    df_filtered = df_original
+                
+                # إذا لم يتم العثور على طلبات، نستخدم الطريقة القديمة
                 if len(df_filtered) == 0:
-                    print(f"⚠️ لم يتم العثور على طلبات في {region_name}")
+                    print(f"⚠️ لم يتم العثور على طلبات في {region_name} باستخدام عمود '{region_column}'")
+                    df_filtered = extract_data_from_messages(orders)
+            else:
+                # إذا لم يوجد عمود المنطقة، نستخدم رسائل الطلب للتصفية
+                print("⚠️ لم يتم العثور على عمود المنطقة، نستخدم رسائل الطلب للتصفية")
+                # تصفية رسائل الطلب حسب المنطقة
+                if region_name == "الرياض":
+                    filtered_orders = [order for order in orders if "الرياض" in order]
+                elif region_name == "باقي المناطق":
+                    filtered_orders = [order for order in orders if "الرياض" not in order]
+                else:
+                    filtered_orders = orders
+                
+                if not filtered_orders:
                     send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
                     return
-            else:
-                print(f"⚠️ لم يتم العثور على عمود المنطقة، نستخدم جميع الصفوف")
-                df_filtered = df_original
-
-            if 'اسم المستلم' in df_filtered.columns and 'اسم العميل' in df_filtered.columns:
-                df_filtered = df_filtered.drop(columns=['اسم العميل'])
-                if 'اسم العميل' in available_columns:
-                    available_columns.remove('اسم العميل')
-
-            if 'رقم المستلم' in df_filtered.columns and 'رقم العميل' in df_filtered.columns:
-                df_filtered = df_filtered.drop(columns=['رقم العميل'])
-                if 'رقم العميل' in available_columns:
-                    available_columns.remove('رقم العميل')
-
-            final_columns = [col for col in available_columns if col in df_filtered.columns]
-            df_filtered = df_filtered[final_columns]
+                
+                df_filtered = extract_data_from_messages(filtered_orders)
+            
+            # إذا كانت النتيجة فارغة، نستخدم الطريقة القديمة
+            if len(df_filtered) == 0:
+                df_filtered = extract_data_from_messages(orders)
+                
         else:
-            orders_data = []
-            for order_msg in filtered_orders:
-                order_dict = {
-                    'العنوان': '',
-                    'المدينة': '',
-                    'رقم الطلبية': '',
-                    'رقم المستلم': '',
-                    'اسم المستلم': ''
-                }
-                lines = order_msg.split('\n')
-                for line in lines:
-                    if 'العنوان /' in line:
-                        full_address = line.split('العنوان /')[1].strip()
-                        if ' - ' in full_address:
-                            parts = full_address.split(' - ', 1)
-                            city = parts[0].strip()
-                            clean_address = parts[1].strip() if len(parts) > 1 else full_address
-                        else:
-                            city = ''
-                            clean_address = full_address
-                        order_dict['العنوان'] = clean_address
-                        order_dict['المدينة'] = city
-                    elif 'رقم الطلبية /' in line:
-                        order_dict['رقم الطلبية'] = line.split('رقم الطلبية /')[1].strip()
-                    elif 'رقم الطلبية/' in line:
-                        order_dict['رقم الطلبية'] = line.split('رقم الطلبية/')[1].strip()
-                    elif 'رقم المستلم /' in line:
-                        order_dict['رقم المستلم'] = line.split('رقم المستلم /')[1].strip()
-                    elif 'اسم المستلم /' in line:
-                        order_dict['اسم المستلم'] = line.split('اسم المستلم /')[1].strip()
-                    elif 'اسم المستلم/' in line:
-                        order_dict['اسم المستلم'] = line.split('اسم المستلم/')[1].strip()
-                orders_data.append(order_dict)
-            df_filtered = pd.DataFrame(orders_data)
-            df_filtered = df_filtered[['العنوان', 'المدينة', 'رقم الطلبية', 'رقم المستلم', 'اسم المستلم']]
-
+            # الطريقة القديمة (بدون ملف أصلي)
+            if region_name == "الرياض":
+                filtered_orders = [order for order in orders if "الرياض" in order]
+            elif region_name == "باقي المناطق":
+                filtered_orders = [order for order in orders if "الرياض" not in order]
+            else:
+                filtered_orders = orders
+            
+            if not filtered_orders:
+                send_whatsapp_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
+                return
+            
+            df_filtered = extract_data_from_messages(filtered_orders)
+        
+        # حفظ الملف
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
             output_path = tmp.name
             df_filtered.to_excel(output_path, index=False, sheet_name=region_name)
