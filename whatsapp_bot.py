@@ -469,7 +469,7 @@ def webhook():
         msg_id = msg.get('id')
         sender_id = msg.get('from')
         
-                msg_timestamp = int(msg.get('timestamp'))
+        msg_timestamp = int(msg.get('timestamp'))
         current_time = int(time.time())
         
         if (current_time - msg_timestamp) > 300:
