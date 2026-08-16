@@ -244,7 +244,7 @@ def send_orders_as_excel(sender_id, orders_data, region_name):
         logger.error(f"خطأ في معالجة Excel: {str(e)}")
         safe_send_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
 
-# ==================== معالجة ملف Excel الرئيسية (مع الأولوية لبيانات المستلم) ====================
+# ==================== معالجة ملف Excel الرئيسية (مع الأولوية المطلقة لبيانات المستلم) ====================
 
 def handle_document_async(sender_id, doc):
     """معالجة الملفات المرسلة عبر واتساب (Excel أو PDF)"""
@@ -292,23 +292,60 @@ def handle_document_async(sender_id, doc):
             # استبدال القيم الفارغة (nan) بنص فارغ لتجنب ظهور nan في الملف النهائي
             df_original = df_original.fillna('')
             
+            # ==== طباعة أسماء الأعمدة للتشخيص ====
+            logger.info(f"📋 أسماء الأعمدة في الملف: {df_original.columns.tolist()}")
+            
             # استخراج البيانات مع الأعمدة الإضافية
             riyadh_orders = []
             other_orders = []
             
-            # الأعمدة المطلوبة
-            required_columns = [
-                'عنوان العميل', 'المدينة', 'رقم الطلب', 
-                'رقم الجوال', 'اسم العميل',
-                'الرمز البريدي', 'رقم الشارع', 'معرف الحي',
-                'العنوان الوطني المختصر', 'رقم المبنى', 'الرقم الإضافي',
-                'إسم المستلم الثاني', 'جوال المستلم'
-            ]
+            # ===== البحث عن أعمدة المستلم بالأسماء الدقيقة =====
+            recipient_name_col = None
+            recipient_phone_col = None
             
-            # التأكد من وجود الأعمدة الأساسية
-            for col in required_columns:
-                if col not in df_original.columns:
-                    df_original[col] = ''  # إضافة العمود إذا كان مفقوداً
+            # البحث عن عمود 'إسم المستلم الثاني'
+            if 'إسم المستلم الثاني' in df_original.columns:
+                recipient_name_col = 'إسم المستلم الثاني'
+                logger.info(f"✅ تم العثور على عمود اسم المستلم: '{recipient_name_col}'")
+            else:
+                # البحث عن أسماء بديلة لاسم المستلم
+                for col in df_original.columns:
+                    col_lower = col.lower()
+                    if 'مستلم' in col and ('اسم' in col or 'إسم' in col):
+                        recipient_name_col = col
+                        logger.info(f"✅ تم العثور على عمود اسم المستلم البديل: '{recipient_name_col}'")
+                        break
+            
+            # البحث عن عمود 'جوال المستلم'
+            if 'جوال المستلم' in df_original.columns:
+                recipient_phone_col = 'جوال المستلم'
+                logger.info(f"✅ تم العثور على عمود جوال المستلم: '{recipient_phone_col}'")
+            else:
+                # البحث عن أسماء بديلة لجوال المستلم
+                for col in df_original.columns:
+                    col_lower = col.lower()
+                    if 'مستلم' in col and ('جوال' in col or 'رقم' in col or 'mobile' in col_lower):
+                        recipient_phone_col = col
+                        logger.info(f"✅ تم العثور على عمود جوال المستلم البديل: '{recipient_phone_col}'")
+                        break
+            
+            # ===== البحث عن أعمدة العميل كحل احتياطي =====
+            customer_name_col = None
+            customer_phone_col = None
+            
+            if not recipient_name_col:
+                for col in df_original.columns:
+                    if 'اسم العميل' in col or 'اسم عميل' in col:
+                        customer_name_col = col
+                        logger.info(f"✅ تم العثور على عمود اسم العميل الاحتياطي: '{customer_name_col}'")
+                        break
+            
+            if not recipient_phone_col:
+                for col in df_original.columns:
+                    if 'رقم الجوال' in col or 'جوال العميل' in col:
+                        customer_phone_col = col
+                        logger.info(f"✅ تم العثور على عمود جوال العميل الاحتياطي: '{customer_phone_col}'")
+                        break
             
             # تحديد عمود المدينة (مرونة في الاسم)
             city_column = None
@@ -340,23 +377,36 @@ def handle_document_async(sender_id, doc):
                         city = address.split('،')[0].strip()
                 
                 # ===== الأولوية المطلقة لبيانات المستلم =====
-                # 1. البحث عن إسم المستلم الثاني
-                recipient_name = str(row.get('إسم المستلم الثاني', '')).strip()
-                if not recipient_name:
-                    # 2. البحث عن اسم العميل
-                    recipient_name = str(row.get('اسم العميل', '')).strip()
+                # 1. محاولة الحصول على اسم المستلم من العمود المحدد
+                if recipient_name_col:
+                    recipient_name = str(row.get(recipient_name_col, '')).strip()
+                else:
+                    recipient_name = ''
                 
-                # 1. البحث عن جوال المستلم
-                recipient_phone = str(row.get('جوال المستلم', '')).strip()
-                if not recipient_phone:
-                    # 2. البحث عن رقم جوال العميل
-                    recipient_phone = str(row.get('رقم الجوال', '')).strip()
+                # 2. إذا لم نجد اسم المستلم، نبحث عن اسم العميل
+                if not recipient_name and customer_name_col:
+                    recipient_name = str(row.get(customer_name_col, '')).strip()
                 
-                # 3. إذا لم يتم العثور على أي بيانات، وضع قيمة افتراضية
+                # 3. إذا لم نجد أي اسم، نضع قيمة افتراضية
                 if not recipient_name:
                     recipient_name = 'غير محدد'
+                
+                # 1. محاولة الحصول على رقم المستلم من العمود المحدد
+                if recipient_phone_col:
+                    recipient_phone = str(row.get(recipient_phone_col, '')).strip()
+                else:
+                    recipient_phone = ''
+                
+                # 2. إذا لم نجد رقم المستلم، نبحث عن رقم العميل
+                if not recipient_phone and customer_phone_col:
+                    recipient_phone = str(row.get(customer_phone_col, '')).strip()
+                
+                # 3. إذا لم نجد أي رقم، نضع قيمة افتراضية
                 if not recipient_phone:
                     recipient_phone = 'غير محدد'
+                
+                # 4. تنظيف رقم الجوال (إزالة المسافات والعلامات غير الضرورية)
+                recipient_phone = recipient_phone.replace(' ', '').replace('-', '').strip()
                 # ===== نهاية الأولوية =====
                 
                 # إنشاء قاموس البيانات للطلب
@@ -364,8 +414,8 @@ def handle_document_async(sender_id, doc):
                     'عنوان العميل': address,
                     'المدينة': city,
                     'رقم الطلب': str(row.get('رقم الطلب', '')),
-                    'رقم الجوال': recipient_phone,  # الأولوية لجوال المستلم
-                    'اسم العميل': recipient_name,   # الأولوية لاسم المستلم الثاني
+                    'رقم الجوال': recipient_phone,
+                    'اسم العميل': recipient_name,
                     'الرمز البريدي': str(row.get('الرمز البريدي', '')),
                     'رقم الشارع': str(row.get('رقم الشارع', '')),
                     'معرف الحي': str(row.get('معرف الحي', '')),
@@ -427,7 +477,7 @@ def process_salla_webhook_async(raw_data):
                 or 'غير متوفر'
             )
 
-            order_status = raw_data.get('status', '')
+                        order_status = raw_data.get('status', '')
             
             logger.info(f"[Salla] 🔍 الحالة المستقبلة للطلب {order_id}: '{order_status}'")
             
@@ -482,7 +532,7 @@ def process_salla_webhook_async(raw_data):
             time.sleep(2)
 
         except Exception as e:
-                        logger.error(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
+            logger.error(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
 
 
 # ==================== دالة منع نوم Render ====================
