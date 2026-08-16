@@ -1,4 +1,4 @@
-# التحديث الأخير: 2026-08-13 - إضافة أعمدة جديدة إلى ملفات Excel والأولوية لبيانات المستلم
+# التحديث الأخير: 2026-08-17 - الأولوية المطلقة لبيانات المستلم مع مرونة في أسماء الأعمدة
 import os
 import requests
 import time
@@ -147,7 +147,7 @@ def handle_pdf_logic(sender_id, media_content):
 # ==================== معالجة Excel (الرسائل المنفصلة) ====================
 
 def send_orders_as_messages(sender_id, orders, region_name):
-    """إرسال الطلبات كرسائل منفصلة - تبقى كما هي بدون الأعمدة الجديدة"""
+    """إرسال الطلبات كرسائل منفصلة"""
     if not orders:
         safe_send_message(sender_id, f"⚠️ لا توجد طلبات في {region_name}")
         return
@@ -157,7 +157,6 @@ def send_orders_as_messages(sender_id, orders, region_name):
     
     for index, order in enumerate(orders):
         try:
-            # order هنا هو النص المستخرج (رسالة نصية)
             safe_send_message(sender_id, order)
             time.sleep(2)
             if (index + 1) % 10 == 0:
@@ -245,7 +244,7 @@ def send_orders_as_excel(sender_id, orders_data, region_name):
         logger.error(f"خطأ في معالجة Excel: {str(e)}")
         safe_send_message(sender_id, f"❌ خطأ: {str(e)[:100]}")
 
-# ==================== معالجة ملف Excel الرئيسية ====================
+# ==================== معالجة ملف Excel الرئيسية (مع الأولوية لبيانات المستلم) ====================
 
 def handle_document_async(sender_id, doc):
     """معالجة الملفات المرسلة عبر واتساب (Excel أو PDF)"""
@@ -290,6 +289,9 @@ def handle_document_async(sender_id, doc):
             # قراءة ملف Excel باستخدام pandas للحصول على جميع الأعمدة
             df_original = pd.read_excel(path)
             
+            # استبدال القيم الفارغة (nan) بنص فارغ لتجنب ظهور nan في الملف النهائي
+            df_original = df_original.fillna('')
+            
             # استخراج البيانات مع الأعمدة الإضافية
             riyadh_orders = []
             other_orders = []
@@ -308,15 +310,28 @@ def handle_document_async(sender_id, doc):
                 if col not in df_original.columns:
                     df_original[col] = ''  # إضافة العمود إذا كان مفقوداً
             
+            # تحديد عمود المدينة (مرونة في الاسم)
+            city_column = None
+            possible_city_names = ['المدينة', 'city', 'City', 'مدينة']
+            for col in possible_city_names:
+                if col in df_original.columns:
+                    city_column = col
+                    break
+            
+            if city_column is None:
+                logger.warning("لم يتم العثور على عمود المدينة، استخدام 'المدينة' كافتراضي")
+                city_column = 'المدينة'
+                if city_column not in df_original.columns:
+                    df_original[city_column] = ''
+            
             # تصفية الطلبات حسب المدينة
             for index, row in df_original.iterrows():
-                # استخراج المدينة من عمود المدينة أو من العنوان
-                city = str(row.get('المدينة', '')).strip()
+                # استخراج المدينة من العمود المحدد
+                city = str(row.get(city_column, '')).strip()
                 address = str(row.get('عنوان العميل', '')).strip()
                 
                 # إذا كانت المدينة فارغة، حاول استخراجها من العنوان
                 if not city and address:
-                    # محاولة استخراج المدينة من العنوان
                     if 'الرياض' in address or 'Riyadh' in address:
                         city = 'الرياض'
                     elif ' - ' in address:
@@ -324,14 +339,25 @@ def handle_document_async(sender_id, doc):
                     elif '،' in address:
                         city = address.split('،')[0].strip()
                 
-                # الأولوية لبيانات المستلم الثاني إذا كانت موجودة
+                # ===== الأولوية المطلقة لبيانات المستلم =====
+                # 1. البحث عن إسم المستلم الثاني
                 recipient_name = str(row.get('إسم المستلم الثاني', '')).strip()
                 if not recipient_name:
+                    # 2. البحث عن اسم العميل
                     recipient_name = str(row.get('اسم العميل', '')).strip()
                 
+                # 1. البحث عن جوال المستلم
                 recipient_phone = str(row.get('جوال المستلم', '')).strip()
                 if not recipient_phone:
+                    # 2. البحث عن رقم جوال العميل
                     recipient_phone = str(row.get('رقم الجوال', '')).strip()
+                
+                # 3. إذا لم يتم العثور على أي بيانات، وضع قيمة افتراضية
+                if not recipient_name:
+                    recipient_name = 'غير محدد'
+                if not recipient_phone:
+                    recipient_phone = 'غير محدد'
+                # ===== نهاية الأولوية =====
                 
                 # إنشاء قاموس البيانات للطلب
                 order_dict = {
@@ -348,8 +374,9 @@ def handle_document_async(sender_id, doc):
                     'الرقم الإضافي': str(row.get('الرقم الإضافي', ''))
                 }
                 
-                # تصنيف الطلب
-                if 'الرياض' in city or 'Riyadh' in city:
+                # تصنيف الطلب (دعم العربية والإنجليزية)
+                city_lower = city.lower()
+                if 'الرياض' in city or 'riyadh' in city_lower:
                     riyadh_orders.append(order_dict)
                 else:
                     other_orders.append(order_dict)
@@ -455,7 +482,8 @@ def process_salla_webhook_async(raw_data):
             time.sleep(2)
 
         except Exception as e:
-            logger.error(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
+                        logger.error(f"[Salla] خطأ في المعالجة الداخلية: {str(e)}")
+
 
 # ==================== دالة منع نوم Render ====================
 
@@ -473,11 +501,13 @@ def keep_alive():
         except Exception as e:
             logger.error(f"خطأ في keep-alive: {str(e)}")
 
+
 # ==================== المسارات (Routes) ====================
 
 @app.route('/', methods=['GET', 'HEAD'])
 def home():
     return "Bot is running", 200
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -486,6 +516,7 @@ def health_check():
         "timestamp": datetime.now().isoformat(),
         "active_sessions": len(user_temp_data)
     }), 200
+
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -500,10 +531,10 @@ def webhook():
         msg = data['entry'][0]['changes'][0]['value']['messages'][0]
         msg_id = msg.get('id')
         sender_id = msg.get('from')
-        
+
         msg_timestamp = int(msg.get('timestamp'))
         current_time = int(time.time())
-        
+
         if (current_time - msg_timestamp) > 300:
             logger.info(f"تجاهل رسالة قديمة من {sender_id}")
             return jsonify({"status": "ignored_old_message"}), 200
@@ -511,7 +542,7 @@ def webhook():
         if msg_id in processed_messages:
             logger.info(f"تجاهل رسالة مكررة من {sender_id}")
             return jsonify({"status": "duplicate"}), 200
-        
+
         processed_messages.add(msg_id)
         if len(processed_messages) > 1000:
             processed_messages.clear()
@@ -519,11 +550,11 @@ def webhook():
         if msg.get('type') == 'document':
             logger.info(f"استلام ملف من {sender_id}")
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
-            
+
         elif msg.get('type') == 'text':
             text_body = msg.get('text', {}).get('body', '').strip()
             text_lower = text_body.lower()
-            
+
             if sender_id in user_temp_data:
                 if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
                     del user_temp_data[sender_id]
@@ -533,9 +564,9 @@ def webhook():
                     data_store = user_temp_data[sender_id]
                     riyadh_orders = data_store["riyadh"]
                     other_orders = data_store["others"]
-                    
+
                     user_temp_expiry[sender_id] = time.time() + 1800
-                    
+
                     if "رياض رسائل" in text_lower:
                         riyadh_texts = []
                         for order in riyadh_orders:
@@ -547,10 +578,10 @@ def webhook():
                             )
                             riyadh_texts.append(text)
                         threading.Thread(target=send_orders_as_messages, args=(sender_id, riyadh_texts, "الرياض")).start()
-                        
+
                     elif "رياض اكسل" in text_lower or "رياض excel" in text_lower:
                         threading.Thread(target=send_orders_as_excel, args=(sender_id, riyadh_orders, "الرياض")).start()
-                        
+
                     elif "باقي رسائل" in text_lower:
                         other_texts = []
                         for order in other_orders:
@@ -562,14 +593,14 @@ def webhook():
                             )
                             other_texts.append(text)
                         threading.Thread(target=send_orders_as_messages, args=(sender_id, other_texts, "باقي المناطق")).start()
-                        
+
                     elif "باقي اكسل" in text_lower or "باقي excel" in text_lower:
                         threading.Thread(target=send_orders_as_excel, args=(sender_id, other_orders, "باقي المناطق")).start()
-                        
+
                     elif "الكل اكسل" in text_lower or "الكل excel" in text_lower:
                         all_orders = riyadh_orders + other_orders
                         threading.Thread(target=send_orders_as_excel, args=(sender_id, all_orders, "جميع الطلبات")).start()
-                        
+
                     elif "مسح" in text_lower or "انهاء" in text_lower or "حذف" in text_lower:
                         if sender_id in user_temp_data:
                             del user_temp_data[sender_id]
@@ -580,13 +611,14 @@ def webhook():
                         safe_send_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
             else:
                 safe_send_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
-            
+
     except KeyError as e:
         logger.warning(f"مفتاح مفقود في البيانات: {str(e)}")
     except Exception as e:
         logger.error(f"خطأ في webhook: {str(e)}")
-        
+
     return jsonify({"status": "ok"}), 200
+
 
 # ==================== مسار سلة ====================
 
@@ -597,7 +629,7 @@ def salla_webhook():
     logger.info(f"🚨 تم الوصول إلى مسار /salla-webhook")
     logger.info(f"🚨 Method: {request.method}")
     logger.info("="*50)
-    
+
     if request.method == 'GET':
         logger.info("Salla webhook verification test received via GET.")
         return "Webhook is active", 200
@@ -611,7 +643,7 @@ def salla_webhook():
         try:
             event = data.get('event', '')
             raw_data = data.get('data', {})
-            
+
             logger.info(f"📢 وصل إشعار جديد من سلة! الحدث: {event}")
 
             if event in ['order.updated', 'order.status.updated']:
@@ -624,8 +656,9 @@ def salla_webhook():
 
         except Exception as e:
             logger.error(f"Salla Webhook Route Error: {str(e)}")
-            
+
         return jsonify({"status": "received"}), 200
+
 
 # ==================== تشغيل التطبيق ====================
 
