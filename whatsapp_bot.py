@@ -1,4 +1,4 @@
-# التحديث الأخير: 2026-08-17 - الأولوية المطلقة لبيانات المستلم مع دعم جميع الدول
+# التحديث الأخير: 2026-08-17 - الأولوية المطلقة لبيانات المستلم مع الاحتفاظ بصيغة الرقم الأصلية
 import os
 import requests
 import time
@@ -106,78 +106,21 @@ def send_whatsapp_image_with_caption(to, media_id, caption):
         logger.error(f"خطأ في إرسال الصورة: {str(e)}")
         raise
 
-# ==================== دالة تنسيق رقم الجوال (دعم جميع الدول) ====================
+# ==================== دالة تنظيف رقم الجوال (بدون تغيير الصيغة) ====================
 
-def format_phone_number(phone):
+def clean_phone_number(phone):
     """
-    تنسيق رقم الجوال مع دعم جميع الدول
-    - يحافظ على رمز الدولة الموجود
-    - يضيف + إذا لم تكن موجودة
-    - يزيل المسافات والعلامات غير الضرورية
+    تنظيف رقم الجوال فقط من المسافات والعلامات غير الضرورية
+    مع الاحتفاظ بصيغته الأصلية (بدون تغيير)
     """
     if not phone or phone == 'غير محدد':
-        return 'غير محدد'
-    
-    # إزالة جميع المسافات والعلامات غير الضرورية
-    phone = str(phone).strip().replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
-    
-    # إذا كان الرقم يبدأ بـ +، نحتفظ به
-    if phone.startswith('+'):
         return phone
     
-    # إذا كان الرقم يبدأ بـ 00 (بديل دولي)
-    if phone.startswith('00'):
-        return '+' + phone[2:]
+    # تحويل إلى نص
+    phone = str(phone).strip()
     
-    # إذا كان الرقم يبدأ بـ 966 (السعودية) بدون +
-    if phone.startswith('966'):
-        return '+' + phone
-    
-    # إذا كان الرقم يبدأ بـ 0 (صفر محلي) لبعض الدول
-    if phone.startswith('0'):
-        phone = phone[1:]
-        # نتعامل مع الأرقام السعودية (9 أرقام بعد إزالة 0)
-        if len(phone) == 9 and phone.isdigit():
-            return '+966' + phone
-        # نتعامل مع الأرقام المصرية (10 أرقام بعد إزالة 0)
-        elif len(phone) == 10 and phone.isdigit():
-            return '+20' + phone
-        else:
-            if phone.isdigit() and len(phone) >= 9:
-                return '+' + phone
-    
-    # إذا كان الرقم يتكون من 9 أرقام (سعودي بدون 0 وبدون 966)
-    if len(phone) == 9 and phone.isdigit():
-        return '+966' + phone
-    
-    # إذا كان الرقم يتكون من 10 أرقام ويبدأ بـ 5 (سعودي)
-    if len(phone) == 10 and phone.startswith('5') and phone.isdigit():
-        return '+966' + phone
-    
-    # إذا كان الرقم يتكون من 10 أرقام ويبدأ بـ 1 (مصري)
-    if len(phone) == 10 and phone.startswith('1') and phone.isdigit():
-        return '+20' + phone
-    
-    # للدول الأخرى، نضيف + إذا كان الرقم يبدو كرقم دولي
-    if phone.isdigit() and len(phone) >= 9:
-        country_codes = {
-            '20': 'مصر',
-            '966': 'السعودية', 
-            '971': 'الإمارات',
-            '965': 'الكويت',
-            '974': 'قطر',
-            '968': 'عُمان',
-            '973': 'البحرين',
-            '962': 'الأردن',
-            '961': 'لبنان',
-            '963': 'سوريا',
-            '964': 'العراق',
-            '970': 'فلسطين'
-        }
-        for code in country_codes:
-            if phone.startswith(code):
-                return '+' + phone
-        return '+' + phone
+    # إزالة المسافات الزائدة فقط
+    phone = ' '.join(phone.split())
     
     return phone
 
@@ -378,12 +321,16 @@ def handle_document_async(sender_id, doc):
             recipient_name_col = None
             recipient_phone_col = None
             
-            # البحث عن عمود 'إسم المستلم الثاني'
-            if 'إسم المستلم الثاني' in df_original.columns:
-                recipient_name_col = 'إسم المستلم الثاني'
-                logger.info(f"✅ تم العثور على عمود اسم المستلم: '{recipient_name_col}'")
-            else:
-                # البحث عن أسماء بديلة لاسم المستلم
+            # البحث عن عمود اسم المستلم
+            name_candidates = ['إسم المستلم الثاني', 'اسم المستلم', 'اسم المستلم الثاني', 'اسم العميل']
+            for col in name_candidates:
+                if col in df_original.columns:
+                    recipient_name_col = col
+                    logger.info(f"✅ تم العثور على عمود اسم المستلم: '{recipient_name_col}'")
+                    break
+            
+            # إذا لم نجد عمود اسم المستلم، نبحث عن أي عمود يحتوي على 'مستلم' أو 'اسم'
+            if not recipient_name_col:
                 for col in df_original.columns:
                     col_lower = col.lower()
                     if 'مستلم' in col and ('اسم' in col or 'إسم' in col):
@@ -391,18 +338,23 @@ def handle_document_async(sender_id, doc):
                         logger.info(f"✅ تم العثور على عمود اسم المستلم البديل: '{recipient_name_col}'")
                         break
             
-            # البحث عن عمود 'جوال المستلم'
-            if 'جوال المستلم' in df_original.columns:
-                recipient_phone_col = 'جوال المستلم'
-                logger.info(f"✅ تم العثور على عمود جوال المستلم: '{recipient_phone_col}'")
-            else:
-                # البحث عن أسماء بديلة لجوال المستلم
+            # البحث عن عمود رقم الجوال (الأولوية للمستلم ثم العميل)
+            phone_candidates = ['جوال المستلم', 'رقم المستلم', 'رقم الجوال', 'جوال العميل']
+            for col in phone_candidates:
+                if col in df_original.columns:
+                    recipient_phone_col = col
+                    logger.info(f"✅ تم العثور على عمود رقم الجوال: '{recipient_phone_col}'")
+                    break
+            
+            # إذا لم نجد، نبحث عن أي عمود يحتوي على 'جوال' أو 'رقم' أو 'phone'
+            if not recipient_phone_col:
                 for col in df_original.columns:
                     col_lower = col.lower()
-                    if 'مستلم' in col and ('جوال' in col or 'رقم' in col or 'mobile' in col_lower):
-                        recipient_phone_col = col
-                        logger.info(f"✅ تم العثور على عمود جوال المستلم البديل: '{recipient_phone_col}'")
-                        break
+                    if 'جوال' in col or 'رقم' in col or 'phone' in col_lower or 'mobile' in col_lower:
+                        if 'مستلم' in col or 'عميل' in col or col == 'رقم الجوال':
+                            recipient_phone_col = col
+                            logger.info(f"✅ تم العثور على عمود رقم الجوال البديل: '{recipient_phone_col}'")
+                            break
             
             # ===== البحث عن أعمدة العميل كحل احتياطي =====
             customer_name_col = None
@@ -455,50 +407,61 @@ def handle_document_async(sender_id, doc):
                 recipient_name = ''
                 recipient_phone = ''
 
-                # 1. محاولة الحصول على اسم المستلم من العمود المحدد (إذا كان العمود موجوداً)
+                # دالة مساعدة للتحقق من القيمة الفارغة
+                def is_empty(value):
+                    if value is None:
+                        return True
+                    if pd.isna(value):
+                        return True
+                    str_val = str(value).strip()
+                    if str_val == '' or str_val.lower() in ['nan', 'none', 'null', 'na']:
+                        return True
+                    return False
+
+                # 1. محاولة الحصول على اسم المستلم
                 if recipient_name_col:
-                    name_value = str(row.get(recipient_name_col, '')).strip()
-                    if name_value:  # ✅ التحقق من وجود قيمة وليست فارغة
-                        recipient_name = name_value
+                    if not is_empty(row.get(recipient_name_col)):
+                        recipient_name = str(row.get(recipient_name_col)).strip()
+                        logger.info(f"✅ استخدام اسم المستلم: '{recipient_name}'")
 
-                # 2. إذا لم نجد اسم المستلم بقيمة، نبحث عن اسم العميل
+                # 2. إذا لم نجد اسم مستلم، نبحث عن اسم العميل (نفس السطر)
                 if not recipient_name and customer_name_col:
-                    name_value = str(row.get(customer_name_col, '')).strip()
-                    if name_value:
-                        recipient_name = name_value
+                    if not is_empty(row.get(customer_name_col)):
+                        recipient_name = str(row.get(customer_name_col)).strip()
+                        logger.info(f"✅ استخدام اسم العميل (حل احتياطي): '{recipient_name}'")
 
-                # 3. إذا لم نجد أي اسم، نضع قيمة افتراضية
+                # 3. إذا لم نجد أي اسم
                 if not recipient_name:
                     recipient_name = 'غير محدد'
 
                 # ===== نفس المنطق لرقم الجوال =====
-                # 1. محاولة الحصول على رقم المستلم من العمود المحدد
+                # 1. محاولة الحصول على جوال المستلم
                 if recipient_phone_col:
-                    phone_value = str(row.get(recipient_phone_col, '')).strip()
-                    if phone_value:  # ✅ التحقق من وجود قيمة وليست فارغة
-                        recipient_phone = phone_value
+                    if not is_empty(row.get(recipient_phone_col)):
+                        recipient_phone = str(row.get(recipient_phone_col)).strip()
+                        logger.info(f"✅ استخدام جوال المستلم: '{recipient_phone}'")
 
-                # 2. إذا لم نجد رقم المستلم بقيمة، نبحث عن رقم العميل
+                # 2. إذا لم نجد جوال مستلم، نبحث عن جوال العميل (نفس السطر)
                 if not recipient_phone and customer_phone_col:
-                    phone_value = str(row.get(customer_phone_col, '')).strip()
-                    if phone_value:
-                        recipient_phone = phone_value
+                    if not is_empty(row.get(customer_phone_col)):
+                        recipient_phone = str(row.get(customer_phone_col)).strip()
+                        logger.info(f"✅ استخدام جوال العميل (حل احتياطي): '{recipient_phone}'")
 
-                # 3. إذا لم نجد أي رقم، نضع قيمة افتراضية
+                # 3. إذا لم نجد أي رقم
                 if not recipient_phone:
                     recipient_phone = 'غير محدد'
-
-                # 4. تنسيق رقم الجوال (دعم جميع الدول)
-                recipient_phone = format_phone_number(recipient_phone)
+                else:
+                    # تنظيف الرقم فقط (إزالة المسافات الزائدة) دون تغيير الصيغة
+                    recipient_phone = clean_phone_number(recipient_phone)
                 # ===== نهاية الأولوية =====
                 
-                # إنشاء قاموس البيانات للطلب (تكملة)
+                # إنشاء قاموس البيانات للطلب
                 order_dict = {
                     'عنوان العميل': address,
                     'المدينة': city,
                     'رقم الطلب': str(row.get('رقم الطلب', '')),
                     'رقم الجوال': recipient_phone,
-                    'اسم العميل': recipient_name,  # ← تم إكمال هذا السطر
+                    'اسم العميل': recipient_name,
                     'الرمز البريدي': str(row.get('الرمز البريدي', '')),
                     'رقم الشارع': str(row.get('رقم الشارع', '')),
                     'معرف الحي': str(row.get('معرف الحي', '')),
@@ -594,7 +557,7 @@ def process_salla_webhook_async(raw_data):
             address_parts = [part.strip() for part in [city, district, street] if part and part.strip()]
             full_address = ' - '.join(address_parts) if address_parts else 'غير محدد'
 
-            mobile_str = format_phone_number(recipient_mobile)
+            mobile_str = clean_phone_number(recipient_mobile)
 
             logger.info(f"[Salla] ✅ سيتم إرسال إشعار للطلب {order_id}")
 
