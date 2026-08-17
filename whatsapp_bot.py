@@ -477,7 +477,7 @@ def process_salla_webhook_async(raw_data):
                 or 'غير متوفر'
             )
 
-                        order_status = raw_data.get('status', '')
+            order_status = raw_data.get('status', '')
             
             logger.info(f"[Salla] 🔍 الحالة المستقبلة للطلب {order_id}: '{order_status}'")
             
