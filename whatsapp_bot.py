@@ -582,53 +582,65 @@ def webhook():
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
 
         elif msg.get('type') == 'text':
-            text_body = msg.get('text', {}).get('body', '').strip()
-            text_lower = text_body.lower()
+    text_body = msg.get('text', {}).get('body', '').strip()
+    text_lower = text_body.lower()
 
-            if sender_id in user_temp_data:
-                if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
+    if sender_id in user_temp_data:
+        if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
+            del user_temp_data[sender_id]
+            del user_temp_expiry[sender_id]
+            safe_send_message(sender_id, "⏰ انتهت صلاحية بيانات الطلبات. أرسل ملف Excel مرة أخرى.")
+        else:
+            data_store = user_temp_data[sender_id]
+            riyadh_orders = data_store["riyadh"]
+            other_orders = data_store["others"]
+
+            user_temp_expiry[sender_id] = time.time() + 1800
+
+            if "رياض رسائل" in text_lower or "رياض رسائل" in text_body:
+                riyadh_texts = []
+                for order in riyadh_orders:
+                    text = (
+                        f"**العنوان /** {order.get('عنوان العميل', '')}\n"
+                        f"**رقم الطلبية /** {order.get('رقم الطلب', '')}\n"
+                        f"**رقم المستلم /** {order.get('رقم الجوال', '')}\n"
+                        f"**اسم المستلم /** {order.get('اسم العميل', '')}"
+                    )
+                    riyadh_texts.append(text)
+                threading.Thread(target=send_orders_as_messages, args=(sender_id, riyadh_texts, "الرياض")).start()
+
+            elif "رياض اكسل" in text_lower or "رياض اكسل" in text_body or "رياض excel" in text_lower:
+                threading.Thread(target=send_orders_as_excel, args=(sender_id, riyadh_orders, "الرياض")).start()
+
+            elif "باقي رسائل" in text_lower or "باقي رسائل" in text_body:
+                other_texts = []
+                for order in other_orders:
+                    text = (
+                        f"**العنوان /** {order.get('عنوان العميل', '')}\n"
+                        f"**رقم الطلبية /** {order.get('رقم الطلب', '')}\n"
+                        f"**رقم المستلم /** {order.get('رقم الجوال', '')}\n"
+                        f"**اسم المستلم /** {order.get('اسم العميل', '')}"
+                    )
+                    other_texts.append(text)
+                threading.Thread(target=send_orders_as_messages, args=(sender_id, other_texts, "باقي المناطق")).start()
+
+            elif "باقي اكسل" in text_lower or "باقي اكسل" in text_body or "باقي excel" in text_lower:
+                threading.Thread(target=send_orders_as_excel, args=(sender_id, other_orders, "باقي المناطق")).start()
+
+            elif "الكل اكسل" in text_lower or "الكل اكسل" in text_body or "الكل excel" in text_lower:
+                all_orders = riyadh_orders + other_orders
+                threading.Thread(target=send_orders_as_excel, args=(sender_id, all_orders, "جميع الطلبات")).start()
+
+            elif "مسح" in text_lower or "انهاء" in text_lower or "حذف" in text_lower:
+                if sender_id in user_temp_data:
                     del user_temp_data[sender_id]
+                if sender_id in user_temp_expiry:
                     del user_temp_expiry[sender_id]
-                    safe_send_message(sender_id, "⏰ انتهت صلاحية بيانات الطلبات. أرسل ملف Excel مرة أخرى.")
-                else:
-                    data_store = user_temp_data[sender_id]
-                    riyadh_orders = data_store["riyadh"]
-                    other_orders = data_store["others"]
-
-                    user_temp_expiry[sender_id] = time.time() + 1800
-
-                    if "باقي رسائل" in text_lower or "باقي رسائل" in text_body:
-                        other_texts = []
-                        for order in other_orders:
-                            text = (
-                                f"**العنوان /** {order.get('عنوان العميل', '')}\n"
-                                f"**رقم الطلبية /** {order.get('رقم الطلب', '')}\n"
-                                f"**رقم المستلم /** {order.get('رقم الجوال', '')}\n"
-                                f"**اسم المستلم /** {order.get('اسم العميل', '')}"
-                             ) 
-                           other_texts.append(text)
-                         threading.Thread(target=send_orders_as_messages, args=(sender_id, other_texts, "باقي المناطق")).start()
-                    
-                    elif "رياض اكسل" in text_lower or "رياض excel" in text_lower:
-                        threading.Thread(target=send_orders_as_excel, args=(sender_id, riyadh_orders, "الرياض")).start()
-
-                    elif "باقي اكسل" in text_lower or "باقي excel" in text_lower:
-                        threading.Thread(target=send_orders_as_excel, args=(sender_id, other_orders, "باقي المناطق")).start()
-
-                    elif "الكل اكسل" in text_lower or "الكل excel" in text_lower:
-                        all_orders = riyadh_orders + other_orders
-                        threading.Thread(target=send_orders_as_excel, args=(sender_id, all_orders, "جميع الطلبات")).start()
-
-                    elif "مسح" in text_lower or "انهاء" in text_lower or "حذف" in text_lower:
-                        if sender_id in user_temp_data:
-                            del user_temp_data[sender_id]
-                        if sender_id in user_temp_expiry:
-                            del user_temp_expiry[sender_id]
-                        safe_send_message(sender_id, "✅ تم مسح بيانات الطلبات المؤقتة.")
-                    else:
-                        safe_send_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي اكسل، الكل اكسل، مسح")
+                safe_send_message(sender_id, "✅ تم مسح بيانات الطلبات المؤقتة.")
             else:
-                safe_send_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
+                safe_send_message(sender_id, "❌ خيار غير صحيح. الأوامر المتاحة: رياض رسائل، رياض اكسل، باقي رسائل، باقي اكسل، الكل اكسل، مسح")
+    else:
+        safe_send_message(sender_id, "أهلاً! أرسل ملف Excel لفرز الطلبات، أو PDF لاستخراج البوالص.")
 
     except KeyError as e:
         logger.warning(f"مفتاح مفقود في البيانات: {str(e)}")
@@ -636,6 +648,7 @@ def webhook():
         logger.error(f"خطأ في webhook: {str(e)}")
 
     return jsonify({"status": "ok"}), 200
+
 
 # ==================== تشغيل التطبيق ====================
 
