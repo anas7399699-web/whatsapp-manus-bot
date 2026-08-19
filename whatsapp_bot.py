@@ -597,18 +597,18 @@ def webhook():
 
                     user_temp_expiry[sender_id] = time.time() + 1800
 
-                    if "رياض رسائل" in text_lower:
-                        riyadh_texts = []
-                        for order in riyadh_orders:
+                    if "باقي رسائل" in text_lower or "باقي رسائل" in text_body:
+                        other_texts = []
+                        for order in other_orders:
                             text = (
                                 f"**العنوان /** {order.get('عنوان العميل', '')}\n"
                                 f"**رقم الطلبية /** {order.get('رقم الطلب', '')}\n"
                                 f"**رقم المستلم /** {order.get('رقم الجوال', '')}\n"
                                 f"**اسم المستلم /** {order.get('اسم العميل', '')}"
-                            )
-                            riyadh_texts.append(text)
-                        threading.Thread(target=send_orders_as_messages, args=(sender_id, riyadh_texts, "الرياض")).start()
-
+                             )
+                             other_texts.append(text)
+                         threading.Thread(target=send_orders_as_messages, args=(sender_id, other_texts, "باقي المناطق")).start()
+                    
                     elif "رياض اكسل" in text_lower or "رياض excel" in text_lower:
                         threading.Thread(target=send_orders_as_excel, args=(sender_id, riyadh_orders, "الرياض")).start()
 
