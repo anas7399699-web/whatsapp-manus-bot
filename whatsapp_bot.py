@@ -292,11 +292,12 @@ def handle_document_async(sender_id, doc):
             riyadh_orders = []
             other_orders = []
             
-            # البحث عن أعمدة المستلم والعميل (نفس المنطق السابق)
+            # ===== البحث عن أعمدة المستلم =====
             recipient_name_col = None
             recipient_phone_col = None
             
-            name_candidates = ['إسم المستلم الثاني', 'اسم المستلم', 'اسم المستلم الثاني', 'اسم العميل']
+            # البحث عن اسم المستلم
+            name_candidates = ['إسم المستلم الثاني', 'اسم المستلم', 'اسم المستلم الثاني']
             for col in name_candidates:
                 if col in df_original.columns:
                     recipient_name_col = col
@@ -311,39 +312,59 @@ def handle_document_async(sender_id, doc):
                         logger.info(f"✅ تم العثور على عمود اسم المستلم البديل: '{recipient_name_col}'")
                         break
             
-            phone_candidates = ['جوال المستلم', 'رقم المستلم', 'رقم الجوال', 'جوال العميل']
+            # البحث عن جوال المستلم
+            phone_candidates = ['جوال المستلم', 'رقم المستلم']
             for col in phone_candidates:
                 if col in df_original.columns:
                     recipient_phone_col = col
-                    logger.info(f"✅ تم العثور على عمود رقم الجوال: '{recipient_phone_col}'")
+                    logger.info(f"✅ تم العثور على عمود جوال المستلم: '{recipient_phone_col}'")
                     break
             
             if not recipient_phone_col:
                 for col in df_original.columns:
                     col_lower = col.lower()
-                    if 'جوال' in col or 'رقم' in col or 'phone' in col_lower or 'mobile' in col_lower:
-                        if 'مستلم' in col or 'عميل' in col or col == 'رقم الجوال':
-                            recipient_phone_col = col
-                            logger.info(f"✅ تم العثور على عمود رقم الجوال البديل: '{recipient_phone_col}'")
-                            break
+                    if 'مستلم' in col and ('جوال' in col or 'رقم' in col or 'phone' in col_lower or 'mobile' in col_lower):
+                        recipient_phone_col = col
+                        logger.info(f"✅ تم العثور على عمود جوال المستلم البديل: '{recipient_phone_col}'")
+                        break
             
+            # ===== البحث عن أعمدة العميل (دائماً كحل احتياطي) =====
             customer_name_col = None
             customer_phone_col = None
             
-            if not recipient_name_col:
-                for col in df_original.columns:
-                    if 'اسم العميل' in col or 'اسم عميل' in col:
-                        customer_name_col = col
-                        logger.info(f"✅ تم العثور على عمود اسم العميل الاحتياطي: '{customer_name_col}'")
-                        break
+            # البحث عن اسم العميل
+            for col in df_original.columns:
+                if 'اسم العميل' in col or 'اسم عميل' in col:
+                    customer_name_col = col
+                    logger.info(f"✅ تم العثور على عمود اسم العميل: '{customer_name_col}'")
+                    break
             
-            if not recipient_phone_col:
+            if not customer_name_col:
                 for col in df_original.columns:
-                    if 'رقم الجوال' in col or 'جوال العميل' in col:
-                        customer_phone_col = col
-                        logger.info(f"✅ تم العثور على عمود جوال العميل الاحتياطي: '{customer_phone_col}'")
-                        break
+                    col_lower = col.lower()
+                    if 'اسم' in col or 'name' in col_lower:
+                        if 'مستلم' not in col:
+                            customer_name_col = col
+                            logger.info(f"✅ تم العثور على عمود اسم بديل: '{customer_name_col}'")
+                            break
             
+            # البحث عن رقم الجوال
+            for col in df_original.columns:
+                if 'رقم الجوال' in col or 'جوال العميل' in col:
+                    customer_phone_col = col
+                    logger.info(f"✅ تم العثور على عمود رقم الجوال: '{customer_phone_col}'")
+                    break
+            
+            if not customer_phone_col:
+                for col in df_original.columns:
+                    col_lower = col.lower()
+                    if 'جوال' in col or 'رقم' in col or 'phone' in col_lower or 'mobile' in col_lower:
+                        if 'مستلم' not in col:
+                            customer_phone_col = col
+                            logger.info(f"✅ تم العثور على عمود رقم بديل: '{customer_phone_col}'")
+                            break
+            
+            # ===== تحديد عمود المدينة =====
             city_column = None
             possible_city_names = ['المدينة', 'city', 'City', 'مدينة']
             for col in possible_city_names:
@@ -357,6 +378,7 @@ def handle_document_async(sender_id, doc):
                 if city_column not in df_original.columns:
                     df_original[city_column] = ''
             
+            # دالة للتحقق من القيمة الفارغة
             def is_empty(value):
                 if value is None:
                     return True
@@ -367,10 +389,12 @@ def handle_document_async(sender_id, doc):
                     return True
                 return False
 
+            # ===== معالجة كل صف =====
             for index, row in df_original.iterrows():
                 city = str(row.get(city_column, '')).strip()
                 address = str(row.get('عنوان العميل', '')).strip()
                 
+                # محاولة استخراج المدينة من العنوان إذا كانت فارغة
                 if not city and address:
                     if 'الرياض' in address or 'Riyadh' in address:
                         city = 'الرياض'
@@ -379,37 +403,45 @@ def handle_document_async(sender_id, doc):
                     elif '،' in address:
                         city = address.split('،')[0].strip()
                 
+                # ===== الأولوية: بيانات المستلم، ثم العميل =====
                 recipient_name = ''
                 recipient_phone = ''
 
+                # 1. محاولة الحصول على اسم المستلم (إذا كان العمود موجوداً)
                 if recipient_name_col:
                     if not is_empty(row.get(recipient_name_col)):
                         recipient_name = str(row.get(recipient_name_col)).strip()
                         logger.info(f"✅ استخدام اسم المستلم: '{recipient_name}'")
 
+                # 2. إذا لم نجد اسم المستلم، نستخدم اسم العميل
                 if not recipient_name and customer_name_col:
                     if not is_empty(row.get(customer_name_col)):
                         recipient_name = str(row.get(customer_name_col)).strip()
                         logger.info(f"✅ استخدام اسم العميل (حل احتياطي): '{recipient_name}'")
 
+                # 3. إذا لم نجد أي اسم، نضع قيمة افتراضية
                 if not recipient_name:
                     recipient_name = 'غير محدد'
 
+                # 4. محاولة الحصول على جوال المستلم (إذا كان العمود موجوداً)
                 if recipient_phone_col:
                     if not is_empty(row.get(recipient_phone_col)):
                         recipient_phone = str(row.get(recipient_phone_col)).strip()
                         logger.info(f"✅ استخدام جوال المستلم: '{recipient_phone}'")
 
+                # 5. إذا لم نجد جوال المستلم، نستخدم جوال العميل
                 if not recipient_phone and customer_phone_col:
                     if not is_empty(row.get(customer_phone_col)):
                         recipient_phone = str(row.get(customer_phone_col)).strip()
                         logger.info(f"✅ استخدام جوال العميل (حل احتياطي): '{recipient_phone}'")
 
+                # 6. إذا لم نجد أي رقم، نضع قيمة افتراضية
                 if not recipient_phone:
                     recipient_phone = 'غير محدد'
                 else:
                     recipient_phone = clean_phone_number(recipient_phone)
                 
+                # إنشاء قاموس الطلب
                 order_dict = {
                     'عنوان العميل': address,
                     'المدينة': city,
@@ -424,24 +456,27 @@ def handle_document_async(sender_id, doc):
                     'الرقم الإضافي': str(row.get('الرقم الإضافي', ''))
                 }
                 
+                # تصنيف الطلب حسب المدينة
                 city_lower = city.lower()
                 if 'الرياض' in city or 'riyadh' in city_lower:
                     riyadh_orders.append(order_dict)
                 else:
                     other_orders.append(order_dict)
             
+            # تخزين النتائج مع صلاحية 30 دقيقة
             user_temp_data[sender_id] = {
                 "riyadh": riyadh_orders,
                 "others": other_orders
             }
             user_temp_expiry[sender_id] = time.time() + 1800
             
+            # عرض الخيارات للمستخدم
             options = f"📊 *نتائج التحليل:*\n"
             options += f"📍 الرياض: {len(riyadh_orders)} طلب\n"
             options += f"🏠 باقي المناطق: {len(other_orders)} طلب\n\n"
             options += "*اختر طريقة الاستلام:*\n\n"
             options += "1️⃣ أرسل 'رياض رسائل' - لاستلام طلبات الرياض كرسائل منفصلة\n"
-            options += "2️⃣ أرسل 'رياض اكسل' - لاستلام طلبات الرياض كملف Excel\n"
+            options += "2️⃣ أرسل 'رياض اكسل' - لاستلام طلبات الرياض كملف Excel\n
             options += "3️⃣ أرسل 'باقي اكسل' - لاستلام طلبات باقي المناطق كملف Excel\n"
             options += "4️⃣ أرسل 'الكل اكسل' - لاستلام جميع الطلبات في ملف Excel واحد\n"
             options += "5️⃣ أرسل 'مسح' - لحذف البيانات المؤقتة"
