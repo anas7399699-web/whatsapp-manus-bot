@@ -582,8 +582,8 @@ def webhook():
             threading.Thread(target=handle_document_async, args=(sender_id, msg['document'])).start()
 
         elif msg.get('type') == 'text':
-    text_body = msg.get('text', {}).get('body', '').strip()
-    text_lower = text_body.lower()
+            text_body = msg.get('text', {}).get('body', '').strip()
+            text_lower = text_body.lower()
 
     if sender_id in user_temp_data:
         if sender_id in user_temp_expiry and time.time() > user_temp_expiry[sender_id]:
