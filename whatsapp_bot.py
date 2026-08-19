@@ -104,13 +104,33 @@ def send_whatsapp_image_with_caption(to, media_id, caption):
         raise
 
 # ==================== دالة تنظيف رقم الجوال ====================
-
 def clean_phone_number(phone):
-    """تنظيف رقم الجوال فقط من المسافات والعلامات غير الضرورية"""
+    """
+    تنظيف رقم الجوال فقط من المسافات والعلامات غير الضرورية
+    مع الاحتفاظ بعلامة + كما هي في الملف الأصلي
+    """
     if not phone or phone == 'غير محدد':
         return phone
+    
+    # تحويل إلى نص وإزالة المسافات الزائدة
     phone = str(phone).strip()
     phone = ' '.join(phone.split())
+    
+    # الاحتفاظ بعلامة + إذا كانت موجودة، أو إضافتها إذا كان الرقم يبدأ بـ 966
+    if phone and not phone.startswith('+'):
+        # إذا كان الرقم يبدأ بـ 966، نضيف +
+        if phone.startswith('966'):
+            phone = '+' + phone
+        # إذا كان الرقم يبدأ بـ 0، نزيل الصفر ونضيف +966
+        elif phone.startswith('0') and len(phone) >= 10:
+            phone = '+966' + phone[1:]
+        # إذا كان الرقم يتكون من 9 أرقام ويبدو كرقم سعودي
+        elif phone.isdigit() and len(phone) == 9:
+            phone = '+966' + phone
+        # إذا كان الرقم يتكون من 10 أرقام ويبدأ بـ 5
+        elif phone.isdigit() and len(phone) == 10 and phone.startswith('5'):
+            phone = '+966' + phone
+    
     return phone
 
 # ==================== معالجة ملفات PDF ====================
