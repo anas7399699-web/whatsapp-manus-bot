@@ -605,8 +605,8 @@ def webhook():
                                 f"**رقم الطلبية /** {order.get('رقم الطلب', '')}\n"
                                 f"**رقم المستلم /** {order.get('رقم الجوال', '')}\n"
                                 f"**اسم المستلم /** {order.get('اسم العميل', '')}"
-                             )
-                             other_texts.append(text)
+                             ) 
+                           other_texts.append(text)
                          threading.Thread(target=send_orders_as_messages, args=(sender_id, other_texts, "باقي المناطق")).start()
                     
                     elif "رياض اكسل" in text_lower or "رياض excel" in text_lower:
